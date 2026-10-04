@@ -1,0 +1,38 @@
+{
+  "name": "@justmytwospence/pi-tool-gate",
+  "version": "0.1.0",
+  "description": "Auto-approves Pi tool calls: fixed rules for the clear cases, Jev for the gray zone, one push-back to the agent, then asks you. Checks project rules.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "jev"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "npm run typecheck && npm test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "eval": "vitest run --config vitest.eval.config.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/justmytwospence/pi-tool-gate"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^22.20.4",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
