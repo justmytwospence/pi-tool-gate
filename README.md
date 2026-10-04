@@ -18,8 +18,8 @@ call is risky and the agent could not find a way around it.
    agent sees (the failed checks and the quoted rule) and an instruction to find a reversible,
    in-scope alternative or explain why the exact action is needed. Later holds in the same turn ask
    you: allow once, allow similar for this session (same program and subcommand, or same
-   directory), block, or block with a message. Without a UI (subagents, print and JSON modes),
-   they are blocked.
+   directory), block, or block with a message. Without a UI (print and JSON modes) they are
+   blocked; pi-subagents forwards a subagent's question to you.
 
 Jev runs through Pi's own classifier models (`ctx.modelRegistry.classify`), so it uses Pi's
 credentials (`TYPESAFE_API_KEY` for the `typesafe` provider) and its token usage is added to the
