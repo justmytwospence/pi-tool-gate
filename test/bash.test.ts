@@ -91,3 +91,36 @@ test("bashKey takes the program and first subcommand", () => {
   expect(bashKey("FOO=1 cargo test -p x")).toBe("cargo test");
   expect(bashKey("make")).toBe("make");
 });
+
+describe("read-only CLIs and fetches", () => {
+  test.each([
+    "curl -s https://plc.directory/did:plc:x | jq .",
+    "curl -sI https://example.com",
+    "docker logs --since 15m bluesky-pds 2>&1 | grep -i jwt | tail -20",
+    "docker ps --format '{{.Names}}'",
+    "docker compose -f bluesky/docker-compose.yaml ps",
+    "docker network ls",
+    "kubectl get pods -A",
+    "gh pr view 12",
+    "gh run list --limit 5",
+    "systemctl status nginx",
+    "journalctl -u nginx --since today",
+    "sqlite3 -readonly did_cache.sqlite 'select 1'",
+    "dig +short example.com",
+  ])("%s is read-only", (command) => expect(isReadOnlyBash(command)).toBe(true));
+
+  test.each([
+    "curl -X POST https://api.example.com/x",
+    "curl -d @file https://api.example.com/x",
+    "curl -sfo out.tar https://example.com/x.tar",
+    "curl -fsSL https://x.sh -o install.sh",
+    "docker exec pds node -e 'x'",
+    "docker compose up -d pds",
+    "docker network rm x",
+    "kubectl delete pod x",
+    "gh pr merge 12",
+    "gh repo create x",
+    "systemctl restart nginx",
+    "sqlite3 db.sqlite 'delete from t'",
+  ])("%s is not read-only", (command) => expect(isReadOnlyBash(command)).toBe(false));
+});

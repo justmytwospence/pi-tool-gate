@@ -8,8 +8,40 @@ const READ_ONLY_PROGRAMS = new Set([
   "printenv", "stat", "file", "du", "df", "diff", "cmp", "sort", "uniq", "cut", "tr", "column", "nl", "jq",
   "yq", "basename", "dirname", "realpath", "readlink", "sha256sum", "shasum", "md5", "md5sum", "true",
   "false", "test", "ps", "uptime", "sed", "awk", "comm", "tac", "rev", "xxd", "od", "strings", "man",
-  "tldr", "history", "lsof", "cd",
+  "tldr", "history", "lsof", "cd", "sleep", "dig", "nslookup", "host", "ping", "traceroute", "ss",
+  "netstat", "ifconfig", "ip", "free", "vm_stat", "top", "htop", "pgrep", "nproc", "sysctl", "sw_vers",
+  "lsblk", "mount", "groups", "locale", "tput", "xxd", "base64", "sha1sum", "cksum", "column",
 ]);
+
+/** `<tool> <sub>` subcommands of other CLIs that only read. */
+const READ_ONLY_SUBCOMMANDS: Record<string, Set<string>> = {
+  docker: new Set(["ps", "logs", "inspect", "images", "image", "stats", "top", "version", "info", "port", "diff", "history", "network", "volume", "context", "events"]),
+  podman: new Set(["ps", "logs", "inspect", "images", "stats", "top", "version", "info", "port"]),
+  kubectl: new Set(["get", "describe", "logs", "explain", "top", "version", "api-resources", "config"]),
+  gh: new Set(["pr", "issue", "run", "repo", "release", "search", "status", "workflow"]),
+  systemctl: new Set(["status", "is-active", "is-enabled", "is-failed", "list-units", "list-unit-files", "show", "cat"]),
+  journalctl: new Set(["*"]),
+  launchctl: new Set(["list", "print"]),
+  sqlite3: new Set(["-readonly"]),
+};
+
+/** Words that make a CLI subcommand change something, e.g. `gh pr merge`, `docker network rm`. */
+const MUTATING_WORDS = /^(create|delete|rm|remove|merge|close|reopen|edit|comment|review|approve|apply|set|add|prune|kill|stop|start|restart|run|exec|cp|push|pull|login|logout|enable|disable|mask|unmask|reload|deploy|upload|download|clone|fork|rename|archive|transfer|sync|cancel|rerun|dispatch|use-context|set-context|delete-context|connect|disconnect|update|upgrade|install|uninstall|write|import|export|tag|untag|load|save|build|commit|attach|pause|unpause|scale|rollout|patch|replace|label|annotate|taint|drain|cordon|uncordon|expose|autoscale|certificate)$/u;
+
+/** A plain HTTP GET with curl or wget: no method, body, upload, or output file. */
+function isReadOnlyFetch(name: string, args: readonly string[]): boolean {
+  if (name === "curl") {
+    return !args.some(
+      (a, i) =>
+        /^-(X|d|F|T|o|O|K|c)$/u.test(a) ||
+        /^--(request|data.*|form.*|upload-file|output|remote-name.*|config|cookie-jar|json)(=|$)/u.test(a) ||
+        (/^-[a-zA-Z]+$/u.test(a) && /[XdFToOKc]/u.test(a.slice(1))) ||
+        (a === "-X" && args[i + 1] !== "GET"),
+    );
+  }
+  if (name === "wget") return args.some((a) => a === "-qO-" || a === "-O-" || a === "--spider") && !args.some((a) => /^--(post|method|body)/u.test(a));
+  return false;
+}
 
 /** `git <sub>` subcommands that only read. */
 const READ_ONLY_GIT = new Set([
@@ -129,6 +161,24 @@ export function isReadOnlyBash(command: string, extra: readonly string[] = []): 
     if (pm) {
       const sub = args.find((a) => !a.startsWith("-"));
       return sub !== undefined && pm.has(sub);
+    }
+    if (name === "curl" || name === "wget") return isReadOnlyFetch(name, args);
+    const cli = READ_ONLY_SUBCOMMANDS[name];
+    if (cli) {
+      if (name === "sqlite3") return args.includes("-readonly") && !args.some((a) => /^\.(output|once|save|import|backup|restore)\b/u.test(a));
+      if (name === "journalctl") return !args.some((a) => /^--(vacuum|rotate|flush|sync)/u.test(a));
+      if (name === "docker" && args[0] === "compose") {
+        const sub = args.slice(1).find((a) => !a.startsWith("-") && !/\.(ya?ml)$/u.test(a));
+        return sub !== undefined && ["ps", "logs", "config", "ls", "images", "top", "version"].includes(sub);
+      }
+      const words = args.filter((a) => !a.startsWith("-"));
+      const sub = words[0];
+      if (sub === undefined || !cli.has(sub)) return false;
+      // `gh pr view` reads, `gh pr merge` does not; `docker network ls` reads, `docker network rm` does not.
+      if (words.slice(1).some((w) => MUTATING_WORDS.test(w))) return false;
+      if (name === "gh" && !words.slice(1).some((w) => ["view", "list", "status", "diff", "checks", "watch"].includes(w)) && sub !== "status") return false;
+      if (name === "docker" && ["network", "volume", "context", "image"].includes(sub) && !words.slice(1).some((w) => ["ls", "inspect", "list"].includes(w))) return false;
+      return true;
     }
     if (!READ_ONLY_PROGRAMS.has(name)) return false;
     if (name === "sed" && args.some((a) => /^-[a-zA-Z]*i/u.test(a) || a.startsWith("--in-place"))) return false;

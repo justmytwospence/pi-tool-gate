@@ -10,7 +10,7 @@ import { loadConfig } from "./config.ts";
 import { type ClassifierUsage, type JevConfig, askJev } from "./jev.ts";
 import { DEFAULT_THRESHOLDS, type Thresholds, judgeQuestions, judgeState, steerReason, verdict } from "./judge.ts";
 import { loadRules } from "./rules.ts";
-import { clip, clipTail, recentTexts } from "./transcript.ts";
+import { clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
 
 export interface GateConfig extends Record<string, unknown> {
   enabled: boolean;
@@ -181,9 +181,10 @@ export default function toolGate(pi: ExtensionAPI) {
     }
 
     const rules = loadRules(ctx.cwd);
-    const texts = recentTexts(ctx.sessionManager.getBranch());
+    const branch = ctx.sessionManager.getBranch();
+    const texts = recentTexts(branch);
     const state = judgeState({
-      userRequest: clip(texts.user, 4_000),
+      userRequest: recentUserMessages(branch, 3).map((text, i, all) => clip(text, i === all.length - 1 ? 3_000 : 1_000)),
       recentIntent: clipTail(texts.assistant, 2_000),
       cwd: ctx.cwd,
       git: await git(ctx.cwd),

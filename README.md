@@ -5,15 +5,27 @@ call is risky and the agent could not find a way around it.
 
 1. **Clear cases, no model call.** Read-only calls run: tools with a `readOnlyHint`, the built-in
    `read`/`grep`/`find`/`ls`, bash made only of read-only programs (`ls`, `rg`, `git status|diff|log`,
-   `npm ls`, ... with no redirects or command substitution), and the tools in `allowTools`.
-   A short list always goes to you: `sudo`, deleting the project, your home directory or anything
-   outside it, force-pushing main/master, `curl … | sh`, touching credential files (`.env*`, `~/.ssh`,
-   `auth.json`, keys), and writes outside the project and temp directories.
-2. **Jev for the gray zone.** Edits, writes, other bash commands, and MCP or extension tools without
-   a read-only hint go to [Jev](https://docs.typesafe.ai) in one request (about 250 ms): is the call
-   in scope for your request, irreversible, does it affect things outside the working copy, how
-   risky is it (0-3), and does it break any project rule. Allowed when risk < 1.5, irreversible <
-   0.5, external < 0.5, in scope >= 0.5 and every rule < 0.7.
+   `npm ls`, `curl`/`wget` GETs, `docker ps|logs|inspect`, `docker compose ps|logs|config`,
+   `kubectl get|describe|logs`, `gh pr|issue|run view|list`, `systemctl status`, `journalctl`,
+   `sqlite3 -readonly`, `dig`, ... with no writing redirects or command substitution), and the tools
+   in `allowTools`. A short list always goes to you: `sudo`, deleting the project, your home
+   directory or anything outside it, force-pushing main/master, `curl … | sh`, touching credential
+   files (`.env*`, `~/.ssh`, `auth.json`, keys), and writes outside the project and temp directories.
+2. **Jev for the gray zone, holding only on confident danger.** Edits, writes, other bash commands,
+   and MCP or extension tools without a read-only hint go to [Jev](https://docs.typesafe.ai) in one
+   request (about 250 ms). A call is held only when Jev is confident it is dangerous:
+   - it cannot be undone (>= 0.9),
+   - it changes remote or shared state (>= 0.85: push, deploy, post, modify a cloud resource)
+     and you did not directly ask for it (< 0.8),
+   - it sends secrets or private data off the machine (>= 0.8),
+   - its impact if unwanted is 2.5 or more of 3 (lost data, leaked secrets, broken production),
+   - it is clearly unrelated to your request (< 0.1) and could do harm (impact >= 1.5),
+   - or it breaks a project rule (>= 0.7).
+
+   Doubt alone never holds a call: an investigation command Jev is unsure is on-task still runs.
+   These bars follow the published Jev gates (pi-warden holds at 0.9 irreversible, pi-jev at 0.9
+   destructive, 0.7 exfiltration, and 2.5 impact). Jev sees your last three messages, so a reply
+   like "ok, I did" keeps its context.
 3. **One push-back, then you.** The first held call in a user turn is blocked with a reason the
    agent sees (the failed checks and the quoted rule) and an instruction to find a reversible,
    in-scope alternative or explain why the exact action is needed. Later holds in the same turn ask
@@ -54,7 +66,10 @@ thresholds.
 {
   "enabled": true,
   "jev": { "enabled": true, "provider": "typesafe", "model": "jev-latest", "timeoutMs": 3000 },
-  "thresholds": { "risk": 1.5, "irreversible": 0.5, "externalEffect": 0.5, "inScope": 0.5, "rule": 0.7 },
+  "thresholds": {
+    "irreversible": 0.9, "remoteChange": 0.85, "requested": 0.8, "exfiltration": 0.8,
+    "impact": 2.5, "offTask": 0.1, "offTaskImpact": 1.5, "rule": 0.7
+  },
   "allowTools": ["codemode", "todo", "web_search"],
   "readOnlyCommands": ["bd"],
   "pushBack": true
@@ -69,4 +84,5 @@ tool its scripts call is gated on its own.
 ```sh
 npm run check   # typecheck and unit tests
 npm run eval    # labeled calls against live Jev through the installed Pi (needs TYPESAFE_API_KEY)
+GATE_REPLAY=decisions.json npm run eval -- eval/replay.eval.ts   # replay recorded decisions
 ```

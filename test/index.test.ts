@@ -2,8 +2,19 @@ import { expect, test } from "vitest";
 import toolGate from "../src/index.ts";
 import { assistantEntry, fakeJev, harness, userEntry } from "./harness.ts";
 
-const safe = { in_scope: { type: "bool", probability: 0.95 }, irreversible: { type: "bool", probability: 0.05 }, external_effect: { type: "bool", probability: 0.02 }, risk: { type: "score", score: 1, confidence: 0.9 } };
-const risky = { ...safe, external_effect: { type: "bool", probability: 0.9 }, risk: { type: "score", score: 2.2, confidence: 0.8 } };
+const safe = {
+  in_scope: { type: "bool", probability: 0.95 },
+  irreversible: { type: "bool", probability: 0.05 },
+  remote_change: { type: "bool", probability: 0.02 },
+  exfiltration: { type: "bool", probability: 0.01 },
+  impact: { type: "score", score: 1, confidence: 0.9 },
+};
+const risky = {
+  ...safe,
+  requested: { type: "bool", probability: 0.1 },
+  remote_change: { type: "bool", probability: 0.95 },
+  impact: { type: "score", score: 2.2, confidence: 0.8 },
+};
 
 function setup(answers: any, ctxOverrides: Record<string, unknown> = {}) {
   const h = harness();
@@ -32,7 +43,7 @@ test("Jev allows a safe gray-zone call and reports its usage on the result", asy
   const { h, jev, ctx } = setup(safe);
   await h.emit("before_agent_start", { prompt: "x" }, ctx);
   expect(await h.emit("tool_call", call("bash", { command: "npm test" }), ctx)).toBeUndefined();
-  expect(jev.calls[0]?.state).toMatchObject({ user_request: "Fix the failing test", recent_intent: "I'll rerun the tests.", tool_call: { tool: "bash", arguments: "npm test" } });
+  expect(jev.calls[0]?.state).toMatchObject({ user_requests: ["Fix the failing test"], recent_intent: "I'll rerun the tests.", tool_call: { tool: "bash", arguments: "npm test" } });
   const result: any = await h.emit("tool_result", { type: "tool_result", toolCallId: "t1", toolName: "bash", content: [], isError: false }, ctx);
   expect(result.usage.input).toBe(300);
   expect(h.entries[0]).toMatchObject({ customType: "tool-gate:decision", data: { action: "allow" } });
@@ -60,7 +71,7 @@ test("first hold pushes back to the agent, the second asks the user", async () =
 });
 
 test("project rules are judged and quoted back", async () => {
-  const { h, jev, ctx } = setup({ ...safe, "rule::0": { type: "bool", probability: 0.9 } });
+  const { h, jev, ctx } = setup({ ...safe, "rule::0": { type: "bool", probability: 0.95 } });
   const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
   const dir = mkdtempSync("/tmp/gate-");
   mkdirSync(`${dir}/.pi`);

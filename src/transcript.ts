@@ -38,3 +38,15 @@ export function clip(text: string, max: number): string {
 export function clipTail(text: string, max: number): string {
   return text.length > max ? `…${text.slice(-(max - 1))}` : text;
 }
+
+/** The last `count` user messages on the branch, oldest first. */
+export function recentUserMessages(entries: readonly unknown[], count: number): string[] {
+  const out: string[] = [];
+  for (let i = entries.length - 1; i >= 0 && out.length < count; i--) {
+    const entry = entries[i] as EntryLike;
+    if (entry?.type !== "message" || entry.message?.role !== "user") continue;
+    const text = messageText(entry.message.content).trim();
+    if (text) out.unshift(text);
+  }
+  return out;
+}
