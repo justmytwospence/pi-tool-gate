@@ -50,3 +50,17 @@ export function recentUserMessages(entries: readonly unknown[], count: number): 
   }
   return out;
 }
+
+/** Text of the assistant message that issued tool call `toolCallId` (the agent's words beside it). */
+export function callerText(entries: readonly unknown[], toolCallId: string): string {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as EntryLike;
+    if (entry?.type !== "message" || entry.message?.role !== "assistant") continue;
+    const content = entry.message.content;
+    const issued =
+      Array.isArray(content) &&
+      content.some((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall" && (b as { id?: unknown }).id === toolCallId);
+    if (issued) return messageText(content).trim();
+  }
+  return "";
+}

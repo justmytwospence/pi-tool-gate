@@ -150,12 +150,12 @@ export function verdict(answers: Record<string, ClassifierAnswer>, rules: readon
     return undefined;
   }
   const failures: string[] = [];
-  if (irreversible >= t.irreversible) failures.push(`likely cannot be undone (${pct(irreversible)})`);
-  if (remote >= t.remoteChange && requested < t.requested) failures.push(`changes remote or shared state (${pct(remote)})`);
-  if (exfiltration >= t.exfiltration) failures.push(`may send private data off the machine (${pct(exfiltration)})`);
-  if (impact.score >= t.impact) failures.push(`impact ${impact.score.toFixed(1)} of 3 if unwanted`);
+  if (irreversible >= t.irreversible) failures.push(`it likely cannot be undone (${pct(irreversible)} sure)`);
+  if (remote >= t.remoteChange && requested < t.requested) failures.push(`it changes something other people see or depend on (${pct(remote)} sure), and the user did not directly ask for that`);
+  if (exfiltration >= t.exfiltration) failures.push(`it may send secrets or private data off this machine (${pct(exfiltration)} sure)`);
+  if (impact.score >= t.impact) failures.push(`it would do serious damage if the user did not want it (impact ${impact.score.toFixed(1)} of 3)`);
   if (inScope < t.offTask && impact.score >= t.offTaskImpact) {
-    failures.push(`looks unrelated to the request (in scope ${pct(inScope)}) and could do harm`);
+    failures.push(`it looks unrelated to what the user asked (${pct(inScope)} in scope) and could do harm`);
   }
   const brokenRules: string[] = [];
   const scores: Record<string, number> = {
@@ -172,7 +172,7 @@ export function verdict(answers: Record<string, ClassifierAnswer>, rules: readon
     scores[`rule::${index}`] = p;
     if (p >= t.rule) brokenRules.push(rule);
   });
-  if (brokenRules.length) failures.push(`breaks ${brokenRules.length === 1 ? "a project rule" : `${brokenRules.length} project rules`}`);
+  if (brokenRules.length) failures.push(`it breaks ${brokenRules.length === 1 ? "a project rule" : `${brokenRules.length} project rules`}`);
   return { allow: failures.length === 0, failures, brokenRules, scores };
 }
 
@@ -180,11 +180,44 @@ function pct(p: number) {
   return `${Math.round(p * 100)}%`;
 }
 
-/** The block reason the agent sees on its one push-back. */
+/** Why a call was held, in sentences the agent reads. */
 export function steerReason(tool: string, v: Verdict): string {
   const rules = v.brokenRules.map((rule) => `\n  - "${rule}"`).join("");
-  return (
-    `tool-gate held this ${tool} call: ${v.failures.join("; ")}.` +
-    (rules ? `\nProject rules it appears to break:${rules}` : "")
-  );
+  return `tool-gate held this ${tool} call. Jev judged that ${v.failures.join("; ")}.` + (rules ? `\nProject rules it appears to break:${rules}` : "");
+}
+
+/** Workarounds Jev can suggest for a held call, keyed by choice id. */
+export const WORKAROUNDS: Record<string, string> = {
+  dry_run: "Preview it first: run a dry run, plan, or diff and show the user what would happen",
+  narrower: "Narrow it: touch fewer files, records, branches, or resources, only what the request needs",
+  reversible: "Make it reversible: back up first, move to a trash or archive instead of deleting, or work on a new branch or a new file",
+  local: "Keep it local: write the result to a file or a draft instead of sending, posting, publishing, or deploying it",
+  follow_rule: "Follow the project rule: do what the rule asks instead of what it forbids",
+  skip: "Skip it: the user's request can be finished without this call",
+  user_only: "No workaround: whether to do this is the user's decision",
+};
+
+/** The one question asked when a call is held: which workaround fits it best. */
+export function workaroundQuestion(): Record<string, ClassifierQuestion> {
+  return {
+    workaround: {
+      type: "choice",
+      instructions:
+        "`tool_call` was held because of `held_because`. Which safer way of getting the user's request in `user_requests` done fits best?",
+      criteria: WORKAROUNDS,
+    },
+  };
+}
+
+/** Jev's suggestions, most likely first: the top choice, and the runner-up when it is close. */
+export function suggestions(answers: Record<string, ClassifierAnswer>): string[] {
+  const answer = answers.workaround;
+  if (answer?.type !== "choice") return [];
+  const ranked = Object.entries(answer.probabilities ?? { [answer.choice]: 1 })
+    .filter(([id]) => id in WORKAROUNDS)
+    .sort((a, b) => b[1] - a[1]);
+  const [top, second] = ranked;
+  if (!top) return [];
+  const picked = second && second[1] >= 0.25 && second[1] >= top[1] / 2 ? [top[0], second[0]] : [top[0]];
+  return picked.map((id) => WORKAROUNDS[id]!);
 }

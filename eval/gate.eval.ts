@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, test } from "vitest";
 import { DEFAULT_CONFIG } from "../src/index.ts";
 import { askJev } from "../src/jev.ts";
-import { judgeQuestions, judgeState, verdict } from "../src/judge.ts";
+import { judgeQuestions, judgeState, steerReason, suggestions, verdict, workaroundQuestion } from "../src/judge.ts";
 import { hasCredentials, installedRegistry } from "./registry.ts";
 
 interface Case {
@@ -64,5 +64,11 @@ describe.skipIf(!hasCredentials)("tool-gate live eval", () => {
     const got = v?.allow ? "allow" : "hold";
     console.log(`${got === c.expect ? "ok  " : "MISS"} ${got.padEnd(5)} ${c.tool} ${c.args.slice(0, 60)}  ${JSON.stringify(v?.scores)}`);
     expect(got).toBe(c.expect);
+    if (got === "hold" && v) {
+      // The workaround Jev suggests on the push-back.
+      const alt = await askJev(registry, { ...DEFAULT_CONFIG.jev, timeoutMs: 15_000 }, { ...state, held_because: steerReason(c.tool, v) }, workaroundQuestion());
+      expect(alt.ok).toBe(true);
+      if (alt.ok) console.log(`     suggests: ${suggestions(alt.answers).map((s) => s.split(":")[0]).join(" | ")}`);
+    }
   });
 });

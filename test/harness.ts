@@ -98,6 +98,6 @@ export function userEntry(text: string) {
   return { type: "message", id: `u${Math.random()}`, message: { role: "user", content: text } };
 }
 
-export function assistantEntry(text: string) {
-  return { type: "message", id: `a${Math.random()}`, message: { role: "assistant", content: [{ type: "text", text }] } };
+export function assistantEntry(text: string, blocks: unknown[] = []) {
+  return { type: "message", id: `a${Math.random()}`, message: { role: "assistant", content: [{ type: "text", text }, ...blocks] } };
 }

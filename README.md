@@ -28,13 +28,17 @@ call is risky and the agent could not find a way around it.
    These bars follow the published Jev gates (pi-warden holds at 0.9 irreversible, pi-jev at 0.9
    destructive, 0.7 exfiltration, and 2.5 impact). Jev sees your last three messages, so a reply
    like "ok, I did" keeps its context.
-3. **The agent tries a workaround first, then you.** A held call is blocked automatically with a
-   reason the agent sees (the failed checks and the quoted rule): get the job done another way if
-   it can, otherwise say why the call is needed and make the identical call again. Only that retry,
-   or another held call of the same family (same program and subcommand, or same directory) in
-   the same user turn, is put to you: allow once, allow similar for this session, or block. Without
-   a UI (print and JSON modes) the retry is blocked; pi-subagents forwards a subagent's question
-   to you. Set `"pushBack": false` to be asked straight away.
+3. **Jev pushes back, the agent works around it or makes its case, then you.** A held call is
+   blocked automatically. The agent sees Jev's explanation (which checks failed and how sure it
+   is, plus any quoted rules) and a suggested workaround, which Jev picks in a second request
+   made only for held calls: preview it with a dry run, narrow it, make it reversible, keep it
+   local, follow the project rule, skip it, or "no workaround, this is the user's call". The
+   agent then either does the job another way, drops the call, or makes its case: a short message
+   saying why this exact call is needed, sent with the identical call. That retry, or another
+   held call of the same family (same program and subcommand, or same directory) in the same user
+   turn, is put to you with Jev's reasons and the agent's case: allow once, allow similar for this
+   session, or block. Without a UI (print and JSON modes) the retry is blocked; pi-subagents
+   forwards a subagent's question to you. Set `"pushBack": false` to be asked straight away.
 
 Jev runs through Pi's own classifier models (`ctx.modelRegistry.classify`), so it uses Pi's
 credentials (`TYPESAFE_API_KEY` for the `typesafe` provider) and its token usage is added to the

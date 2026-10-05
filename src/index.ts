@@ -1,16 +1,27 @@
 // pi-tool-gate: auto-approves tool calls. Fixed rules settle the clear cases (read-only calls run,
-// a short list of dangerous ones always goes to you); Jev, through Pi's own classifier models,
-// judges the gray zone. A held call is first blocked with a reason the agent sees, so it can find
-// another way; only if the agent retries the same call is it put to you. Project rules in `.pi/tool-gate-rules.md` are checked on every
-// judged call. Without Jev the gate falls back to Pi's tool hints.
+// a short list of dangerous ones is always held); Jev, through Pi's own classifier models, judges
+// the gray zone. A held call is first blocked with Jev's explanation and suggested workaround; the
+// agent works around it or makes its case and retries, and only that retry is put to you, with the
+// case. Project rules in `.pi/tool-gate-rules.md` are checked on every judged call. Without Jev the
+// gate falls back to Pi's tool hints.
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { alwaysAskBash, alwaysAskPath, bashKey, isCredentialPath, expandHome, isReadOnlyBash } from "./bash.ts";
 import { loadConfig } from "./config.ts";
 import { type ClassifierUsage, type JevConfig, askJev } from "./jev.ts";
-import { DEFAULT_THRESHOLDS, type Thresholds, judgeQuestions, judgeState, steerReason, verdict } from "./judge.ts";
+import {
+  DEFAULT_THRESHOLDS,
+  type Thresholds,
+  WORKAROUNDS,
+  judgeQuestions,
+  judgeState,
+  steerReason,
+  suggestions,
+  verdict,
+  workaroundQuestion,
+} from "./judge.ts";
 import { loadRules } from "./rules.ts";
-import { clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
+import { callerText, clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
 
 export interface GateConfig extends Record<string, unknown> {
   enabled: boolean;
@@ -42,7 +53,7 @@ const BUILTIN_READ = new Set(["read", "grep", "find", "ls"]);
 
 type Plan =
   | { kind: "allow"; why: string }
-  | { kind: "ask"; reasons: string[]; key: string }
+  | { kind: "ask"; reasons: string[]; key: string; args: string }
   | { kind: "judge"; args: string; key: string };
 
 interface Annotations {
@@ -97,21 +108,21 @@ export default function toolGate(pi: ExtensionAPI) {
     if (tool === "bash") {
       const command = String(input.command ?? "");
       const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch);
-      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}` };
+      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(command, 6_000) };
       if (isReadOnlyBash(command, config.readOnlyCommands)) return { kind: "allow", why: "read-only command" };
       return { kind: "judge", args: clip(command, 6_000), key: `bash:${bashKey(command)}` };
     }
     if (tool === "edit" || tool === "write") {
       const file = String(input.path ?? "");
       const reasons = alwaysAskPath(file);
-      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}` };
+      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(JSON.stringify(input), 6_000) };
       const dir = path.dirname(path.resolve(cwd, expandHome(file)));
       return { kind: "judge", args: clip(JSON.stringify(input), 6_000), key: `${tool}:${dir}` };
     }
     if (BUILTIN_READ.has(tool)) {
       const file = String(input.path ?? "");
       if (tool === "read" && file && isCredentialPath(expandHome(file))) {
-        return { kind: "ask", reasons: [`reads credentials (${file})`], key: `read:${file}` };
+        return { kind: "ask", reasons: [`reads credentials (${file})`], key: `read:${file}`, args: clip(JSON.stringify(input), 2_000) };
       }
       return { kind: "allow", why: "read-only tool" };
     }
@@ -140,38 +151,76 @@ export default function toolGate(pi: ExtensionAPI) {
     return next;
   };
 
+  /** The state Jev judges a call in. */
+  const judgeStateFor = async (ctx: ExtensionContext, tool: string, args: string, rules: readonly string[]) => {
+    const branch = ctx.sessionManager.getBranch();
+    return judgeState({
+      userRequest: recentUserMessages(branch, 3).map((text, i, all) => clip(text, i === all.length - 1 ? 3_000 : 1_000)),
+      recentIntent: clipTail(recentTexts(branch).assistant, 2_000),
+      cwd: ctx.cwd,
+      git: await git(ctx.cwd),
+      tool,
+      args,
+      rules,
+    });
+  };
+
   /**
-   * A held call: the first time in a user turn it is blocked with `reason` so the agent can work
-   * around it; when the agent retries the same call (or another of the same family), it goes to the
-   * user, or is blocked without one.
+   * A held call. The first time in a user turn it is blocked with Jev's explanation and suggested
+   * workaround, and the agent either works around it or makes its case and retries the identical
+   * call. That retry (or another held call of the same family) goes to the user with the agent's
+   * case, or is blocked without a user.
    */
-  const hold = (
+  const hold = async (
     ctx: ExtensionContext,
-    tool: string,
-    input: Record<string, unknown>,
-    family: string,
-    reason: string,
-    title: string,
-    similarKey: string | undefined,
+    h: {
+      toolCallId: string;
+      tool: string;
+      input: Record<string, unknown>;
+      family: string;
+      /** Why it was held, for the agent. */
+      reason: string;
+      /** Why it was held, one line for the user. */
+      summary: string;
+      similarKey: string | undefined;
+      state: Record<string, unknown>;
+    },
   ) => {
-    const exact = `${tool}\0${JSON.stringify(input)}`;
-    if (config.pushBack && !pushedBackThisTurn.has(exact) && !pushedBackThisTurn.has(family)) {
+    const exact = `${h.tool}\0${JSON.stringify(h.input)}`;
+    if (config.pushBack && !pushedBackThisTurn.has(exact) && !pushedBackThisTurn.has(h.family)) {
       pushedBackThisTurn.add(exact);
-      pushedBackThisTurn.add(family);
+      pushedBackThisTurn.add(h.family);
       pushedBack++;
       status(ctx);
+      const suggestion = await askJev(ctx.modelRegistry, config.jev, { ...h.state, held_because: h.reason }, workaroundQuestion(), ctx.signal);
+      const ideas = suggestion.ok ? suggestions(suggestion.answers) : [];
+      if (suggestion.ok && suggestion.usage) pendingUsage.set(h.toolCallId, addUsage(pendingUsage.get(h.toolCallId), suggestion.usage));
+      const noWorkaround = ideas[0] === WORKAROUNDS.user_only;
+      const advice = noWorkaround
+        ? "Jev sees no workaround: whether to do this is the user's decision."
+        : ideas.length
+          ? `Jev suggests: ${ideas.join("; or ")}.`
+          : "Look for a safer way: reversible, local, narrower, or previewed first.";
       return {
         block: true,
         reason:
-          `${reason}\nThe user has not been asked. Get the job done another way if you can (a reversible, local, or narrower ` +
-          "alternative). If there is no good alternative, say in one sentence why this call is needed, then make the identical " +
-          "call again: tool-gate will ask the user to approve it.",
+          `${h.reason}\n${advice}\nThe user has not been asked. ` +
+          (noWorkaround ? "If the call still seems worth it, " : "Get the job done another way if you can. If no workaround is good enough, ") +
+          "make your case: in a short message to the user, say why this exact call is needed" +
+          (noWorkaround ? "" : " and why the workarounds fall short") +
+          ", then make the identical call in that same message. tool-gate will show your case to the user and ask them to approve it. " +
+          "If it is not worth raising, carry on without it.",
       };
     }
     held++;
     status(ctx);
-    if (!ctx.hasUI) return { block: true, reason: `${reason}\nBlocked: there is no user to approve it.` };
-    return ask(ctx, title, similarKey);
+    if (!ctx.hasUI) return { block: true, reason: `${h.reason}\nBlocked: there is no user to approve it.` };
+    const agentCase = callerText(ctx.sessionManager.getBranch(), h.toolCallId);
+    const title =
+      `Allow? ${describeCall(h.tool, h.input)}\n` +
+      `Held: ${h.summary}\n` +
+      `Agent: ${agentCase ? clip(agentCase.replace(/\s+/gu, " "), 600) : "(gave no reason)"}`;
+    return ask(ctx, title, h.similarKey);
   };
 
   const describeCall = (tool: string, input: Record<string, unknown>) => {
@@ -205,7 +254,16 @@ export default function toolGate(pi: ExtensionAPI) {
 
     if (p.kind === "ask") {
       const why = p.reasons.join("; ");
-      return hold(ctx, tool, input, p.key, `tool-gate held this ${tool} call: it ${why}.`, `Allow? ${describeCall(tool, input)}\n${why}`, undefined);
+      return hold(ctx, {
+        toolCallId: event.toolCallId,
+        tool,
+        input,
+        family: p.key,
+        reason: `tool-gate held this ${tool} call: it ${why}. Calls like this are always held, whatever Jev says.`,
+        summary: why,
+        similarKey: undefined,
+        state: await judgeStateFor(ctx, tool, p.args, []),
+      });
     }
 
     if (allowSimilar.has(p.key)) {
@@ -215,17 +273,7 @@ export default function toolGate(pi: ExtensionAPI) {
     }
 
     const rules = loadRules(ctx.cwd);
-    const branch = ctx.sessionManager.getBranch();
-    const texts = recentTexts(branch);
-    const state = judgeState({
-      userRequest: recentUserMessages(branch, 3).map((text, i, all) => clip(text, i === all.length - 1 ? 3_000 : 1_000)),
-      recentIntent: clipTail(texts.assistant, 2_000),
-      cwd: ctx.cwd,
-      git: await git(ctx.cwd),
-      tool,
-      args: p.args,
-      rules,
-    });
+    const state = await judgeStateFor(ctx, tool, p.args, rules);
     const outcome = await askJev(ctx.modelRegistry, config.jev, state, judgeQuestions(rules), ctx.signal);
 
     if (!outcome.ok) {
@@ -265,8 +313,17 @@ export default function toolGate(pi: ExtensionAPI) {
       status(ctx);
       return undefined;
     }
-    const rules_ = v!.brokenRules.length ? `\nRules: ${v!.brokenRules.map((r) => `"${clip(r, 120)}"`).join(", ")}` : "";
-    return hold(ctx, tool, input, p.key, steerReason(tool, v!), `Allow? ${describeCall(tool, input)}\nJev: ${v!.failures.join("; ")}${rules_}`, p.key);
+    const rules_ = v!.brokenRules.length ? ` (${v!.brokenRules.map((r) => `"${clip(r, 120)}"`).join(", ")})` : "";
+    return hold(ctx, {
+      toolCallId: event.toolCallId,
+      tool,
+      input,
+      family: p.key,
+      reason: steerReason(tool, v!),
+      summary: `${v!.failures.join("; ")}${rules_}`,
+      similarKey: p.key,
+      state,
+    });
   });
 
   pi.on("tool_result", (event) => {
