@@ -1,7 +1,7 @@
 // pi-tool-gate: auto-approves tool calls. Fixed rules settle the clear cases (read-only calls run,
 // a short list of dangerous ones always goes to you); Jev, through Pi's own classifier models,
-// judges the gray zone. A held call is first pushed back to the agent once per user turn; after
-// that, holds are put to you. Project rules in `.pi/tool-gate-rules.md` are checked on every
+// judges the gray zone. A held call is first blocked with a reason the agent sees, so it can find
+// another way; only if the agent retries the same call is it put to you. Project rules in `.pi/tool-gate-rules.md` are checked on every
 // judged call. Without Jev the gate falls back to Pi's tool hints.
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -20,7 +20,7 @@ export interface GateConfig extends Record<string, unknown> {
   allowTools: string[];
   /** Extra programs treated as read-only in bash. */
   readOnlyCommands: string[];
-  /** Push a hold back to the agent once per user turn before asking you. */
+  /** Block a held call once with a reason for the agent before asking you; a retry asks you. */
   pushBack: boolean;
 }
 
@@ -42,7 +42,7 @@ const BUILTIN_READ = new Set(["read", "grep", "find", "ls"]);
 
 type Plan =
   | { kind: "allow"; why: string }
-  | { kind: "ask"; reasons: string[] }
+  | { kind: "ask"; reasons: string[]; key: string }
   | { kind: "judge"; args: string; key: string };
 
 interface Annotations {
@@ -56,7 +56,9 @@ export default function toolGate(pi: ExtensionAPI) {
   let sessionOn = true;
   let auto = 0;
   let held = 0;
-  let holdsThisTurn = 0;
+  let pushedBack = 0;
+  /** Calls (and families of calls) pushed back this user turn; a retry goes to the user. */
+  const pushedBackThisTurn = new Set<string>();
   const allowSimilar = new Set<string>();
   const pendingUsage = new Map<string, ClassifierUsage>();
   let gitInfo: Promise<{ branch: string; dirty: boolean } | undefined> | undefined;
@@ -70,7 +72,10 @@ export default function toolGate(pi: ExtensionAPI) {
 
   const status = (ctx: ExtensionContext) => {
     if (!ctx.hasUI) return;
-    ctx.ui.setStatus(STATUS_KEY, sessionOn && config.enabled ? `gate: ${auto} auto · ${held} held` : "gate: off");
+    ctx.ui.setStatus(
+      STATUS_KEY,
+      sessionOn && config.enabled ? `gate: ${auto} auto · ${pushedBack} pushed back · ${held} asked` : "gate: off",
+    );
   };
 
   const git = (cwd: string) => {
@@ -92,20 +97,22 @@ export default function toolGate(pi: ExtensionAPI) {
     if (tool === "bash") {
       const command = String(input.command ?? "");
       const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch);
-      if (reasons.length) return { kind: "ask", reasons };
+      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}` };
       if (isReadOnlyBash(command, config.readOnlyCommands)) return { kind: "allow", why: "read-only command" };
       return { kind: "judge", args: clip(command, 6_000), key: `bash:${bashKey(command)}` };
     }
     if (tool === "edit" || tool === "write") {
       const file = String(input.path ?? "");
-      const reasons = alwaysAskPath(file, cwd);
-      if (reasons.length) return { kind: "ask", reasons };
+      const reasons = alwaysAskPath(file);
+      if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}` };
       const dir = path.dirname(path.resolve(cwd, expandHome(file)));
       return { kind: "judge", args: clip(JSON.stringify(input), 6_000), key: `${tool}:${dir}` };
     }
     if (BUILTIN_READ.has(tool)) {
       const file = String(input.path ?? "");
-      if (tool === "read" && file && isCredentialPath(expandHome(file))) return { kind: "ask", reasons: [`reads credentials (${file})`] };
+      if (tool === "read" && file && isCredentialPath(expandHome(file))) {
+        return { kind: "ask", reasons: [`reads credentials (${file})`], key: `read:${file}` };
+      }
       return { kind: "allow", why: "read-only tool" };
     }
     if (annotations(tool)?.readOnlyHint === true) return { kind: "allow", why: "read-only hint" };
@@ -119,22 +126,52 @@ export default function toolGate(pi: ExtensionAPI) {
     similarKey: string | undefined,
   ): Promise<{ block?: boolean; reason?: string } | undefined> => {
     const run = async () => {
-      const options = ["Allow once", ...(similarKey ? ["Allow similar for this session"] : []), "Block", "Block with a message to the agent"];
+      const options = ["Allow once", ...(similarKey ? ["Allow similar for this session"] : []), "Block"];
       const answer = await ctx.ui.select(title, options);
       if (answer === "Allow once") return undefined;
       if (answer === "Allow similar for this session" && similarKey) {
         allowSimilar.add(similarKey);
         return undefined;
       }
-      if (answer === "Block with a message to the agent") {
-        const message = await ctx.ui.input("Message to the agent", "why it was blocked, what to do instead");
-        return { block: true, reason: `The user blocked this call${message?.trim() ? `: ${message.trim()}` : "."}` };
-      }
-      return { block: true, reason: "The user blocked this call." };
+      return { block: true, reason: "The user declined this call. Do not retry it; continue without it, or ask the user how to proceed." };
     };
     const next = dialogs.then(run, run);
     dialogs = next.catch(() => undefined);
     return next;
+  };
+
+  /**
+   * A held call: the first time in a user turn it is blocked with `reason` so the agent can work
+   * around it; when the agent retries the same call (or another of the same family), it goes to the
+   * user, or is blocked without one.
+   */
+  const hold = (
+    ctx: ExtensionContext,
+    tool: string,
+    input: Record<string, unknown>,
+    family: string,
+    reason: string,
+    title: string,
+    similarKey: string | undefined,
+  ) => {
+    const exact = `${tool}\0${JSON.stringify(input)}`;
+    if (config.pushBack && !pushedBackThisTurn.has(exact) && !pushedBackThisTurn.has(family)) {
+      pushedBackThisTurn.add(exact);
+      pushedBackThisTurn.add(family);
+      pushedBack++;
+      status(ctx);
+      return {
+        block: true,
+        reason:
+          `${reason}\nThe user has not been asked. Get the job done another way if you can (a reversible, local, or narrower ` +
+          "alternative). If there is no good alternative, say in one sentence why this call is needed, then make the identical " +
+          "call again: tool-gate will ask the user to approve it.",
+      };
+    }
+    held++;
+    status(ctx);
+    if (!ctx.hasUI) return { block: true, reason: `${reason}\nBlocked: there is no user to approve it.` };
+    return ask(ctx, title, similarKey);
   };
 
   const describeCall = (tool: string, input: Record<string, unknown>) => {
@@ -150,7 +187,7 @@ export default function toolGate(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", (_event, ctx) => {
     config = loadConfig("tool-gate", DEFAULT_CONFIG, ctx.cwd);
-    holdsThisTurn = 0;
+    pushedBackThisTurn.clear();
     gitInfo = undefined;
   });
 
@@ -167,11 +204,8 @@ export default function toolGate(pi: ExtensionAPI) {
     }
 
     if (p.kind === "ask") {
-      held++;
-      status(ctx);
-      const reason = `tool-gate: ${describeCall(tool, input)} ${p.reasons.join("; ")}`;
-      if (!ctx.hasUI) return { block: true, reason: `${reason}. Blocked without a user to ask.` };
-      return ask(ctx, `Allow? ${describeCall(tool, input)}\n${p.reasons.join("; ")}`, undefined);
+      const why = p.reasons.join("; ");
+      return hold(ctx, tool, input, p.key, `tool-gate held this ${tool} call: it ${why}.`, `Allow? ${describeCall(tool, input)}\n${why}`, undefined);
     }
 
     if (allowSimilar.has(p.key)) {
@@ -215,7 +249,7 @@ export default function toolGate(pi: ExtensionAPI) {
 
     if (outcome.usage) pendingUsage.set(event.toolCallId, outcome.usage);
     const v = verdict(outcome.answers, rules, config.thresholds);
-    const action = !v ? "allow" : v.allow ? "allow" : config.pushBack && holdsThisTurn === 0 ? "push-back" : ctx.hasUI ? "ask" : "block";
+    const action = !v || v.allow ? "allow" : "hold";
     pi.appendEntry("tool-gate:decision", {
       tool,
       args: clip(p.args, 500),
@@ -231,13 +265,8 @@ export default function toolGate(pi: ExtensionAPI) {
       status(ctx);
       return undefined;
     }
-    held++;
-    holdsThisTurn++;
-    status(ctx);
-    const reason = steerReason(tool, v!);
-    if (action === "push-back" || action === "block") return { block: true, reason };
     const rules_ = v!.brokenRules.length ? `\nRules: ${v!.brokenRules.map((r) => `"${clip(r, 120)}"`).join(", ")}` : "";
-    return ask(ctx, `Allow? ${describeCall(tool, input)}\nJev: ${v!.failures.join("; ")}${rules_}`, p.key);
+    return hold(ctx, tool, input, p.key, steerReason(tool, v!), `Allow? ${describeCall(tool, input)}\nJev: ${v!.failures.join("; ")}${rules_}`, p.key);
   });
 
   pi.on("tool_result", (event) => {
@@ -262,7 +291,7 @@ export default function toolGate(pi: ExtensionAPI) {
       const rules = loadRules(ctx.cwd);
       ctx.ui.notify(
         [
-          `tool-gate ${sessionOn && config.enabled ? "on" : "off"}: ${auto} auto-approved, ${held} held this session.`,
+          `tool-gate ${sessionOn && config.enabled ? "on" : "off"}: ${auto} auto-approved, ${pushedBack} pushed back, ${held} asked this session.`,
           `Jev: ${config.jev.enabled ? `${config.jev.provider}/${config.jev.model}` : "off"}; push-back ${config.pushBack ? "on" : "off"}.`,
           `${rules.length} project rule${rules.length === 1 ? "" : "s"}; ${allowSimilar.size} "allow similar" grant${allowSimilar.size === 1 ? "" : "s"}.`,
         ].join("\n"),

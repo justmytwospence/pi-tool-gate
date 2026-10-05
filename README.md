@@ -8,15 +8,17 @@ call is risky and the agent could not find a way around it.
    `npm ls`, `curl`/`wget` GETs, `docker ps|logs|inspect`, `docker compose ps|logs|config`,
    `kubectl get|describe|logs`, `gh pr|issue|run view|list`, `systemctl status`, `journalctl`,
    `sqlite3 -readonly`, `dig`, ... with no writing redirects or command substitution), and the tools
-   in `allowTools`. A short list always goes to you: `sudo`, deleting the project, your home
-   directory or anything outside it, force-pushing main/master, `curl … | sh`, touching credential
-   files (`.env*`, `~/.ssh`, `auth.json`, keys), and writes outside the project and temp directories.
+   in `allowTools`. A short list is always held, whatever Jev says: `sudo`, deleting `/`, a
+   top-level directory, your home directory, the project, or a parent of either, force-pushing
+   main/master, `curl … | sh`, and touching credential files (`.env*` but not `.env.example`,
+   `~/.ssh`, `auth.json`, keys). Writes and deletes elsewhere outside the project go to Jev.
 2. **Jev for the gray zone, holding only on confident danger.** Edits, writes, other bash commands,
    and MCP or extension tools without a read-only hint go to [Jev](https://docs.typesafe.ai) in one
    request (about 250 ms). A call is held only when Jev is confident it is dangerous:
    - it cannot be undone (>= 0.9),
-   - it changes remote or shared state (>= 0.85: push, deploy, post, modify a cloud resource)
-     and you did not directly ask for it (< 0.8),
+   - it does something other people see or depend on (>= 0.85: deploy, publish, post a message,
+     open or merge a PR, modify a shared or cloud resource) and you did not directly ask for it
+     (< 0.8); pushing commits to a git branch and maintaining your own machines over ssh do not count,
    - it sends secrets or private data off the machine (>= 0.8),
    - its impact if unwanted is 2.5 or more of 3 (lost data, leaked secrets, broken production),
    - it is clearly unrelated to your request (< 0.1) and could do harm (impact >= 1.5),
@@ -26,12 +28,13 @@ call is risky and the agent could not find a way around it.
    These bars follow the published Jev gates (pi-warden holds at 0.9 irreversible, pi-jev at 0.9
    destructive, 0.7 exfiltration, and 2.5 impact). Jev sees your last three messages, so a reply
    like "ok, I did" keeps its context.
-3. **One push-back, then you.** The first held call in a user turn is blocked with a reason the
-   agent sees (the failed checks and the quoted rule) and an instruction to find a reversible,
-   in-scope alternative or explain why the exact action is needed. Later holds in the same turn ask
-   you: allow once, allow similar for this session (same program and subcommand, or same
-   directory), block, or block with a message. Without a UI (print and JSON modes) they are
-   blocked; pi-subagents forwards a subagent's question to you.
+3. **The agent tries a workaround first, then you.** A held call is blocked automatically with a
+   reason the agent sees (the failed checks and the quoted rule): get the job done another way if
+   it can, otherwise say why the call is needed and make the identical call again. Only that retry,
+   or another held call of the same family (same program and subcommand, or same directory) in
+   the same user turn, is put to you: allow once, allow similar for this session, or block. Without
+   a UI (print and JSON modes) the retry is blocked; pi-subagents forwards a subagent's question
+   to you. Set `"pushBack": false` to be asked straight away.
 
 Jev runs through Pi's own classifier models (`ctx.modelRegistry.classify`), so it uses Pi's
 credentials (`TYPESAFE_API_KEY` for the `typesafe` provider) and its token usage is added to the
@@ -54,7 +57,7 @@ is a rule (at most 30), checked on every judged call:
 - `/gate` or `/gate status`: counts, Jev model, rules and session grants.
 - `/gate on`, `/gate off`: turn the gate on or off for this session.
 
-The footer status shows `gate: N auto · M held`. Every judged call is recorded in the session as a
+The footer status shows `gate: N auto · P pushed back · M asked`. Every judged call is recorded in the session as a
 `tool-gate:decision` entry (scores, action, latency, tokens; never sent to the model), for tuning
 thresholds.
 

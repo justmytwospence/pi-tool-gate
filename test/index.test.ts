@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import toolGate from "../src/index.ts";
+import toolGate, { DEFAULT_CONFIG } from "../src/index.ts";
 import { assistantEntry, fakeJev, harness, userEntry } from "./harness.ts";
 
 const safe = {
@@ -36,7 +36,7 @@ test("read-only calls pass without Jev", async () => {
   expect(await h.emit("tool_call", call("bash", { command: "git status && rg foo" }), ctx)).toBeUndefined();
   expect(await h.emit("tool_call", call("read", { path: "src/a.ts" }), ctx)).toBeUndefined();
   expect(jev.calls).toHaveLength(0);
-  expect(ctx.ui.status.get("tool-gate")).toBe("gate: 2 auto · 0 held");
+  expect(ctx.ui.status.get("tool-gate")).toBe("gate: 2 auto · 0 pushed back · 0 asked");
 });
 
 test("Jev allows a safe gray-zone call and reports its usage on the result", async () => {
@@ -49,25 +49,39 @@ test("Jev allows a safe gray-zone call and reports its usage on the result", asy
   expect(h.entries[0]).toMatchObject({ customType: "tool-gate:decision", data: { action: "allow" } });
 });
 
-test("first hold pushes back to the agent, the second asks the user", async () => {
+test("a held call is pushed back to the agent; retrying it asks the user", async () => {
   const { h, ctx } = setup(risky);
   await h.emit("before_agent_start", { prompt: "x" }, ctx);
   const first: any = await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx);
   expect(first.block).toBe(true);
-  expect(first.reason).toMatch(/Find a reversible, in-scope alternative/u);
+  expect(first.reason).toMatch(/changes remote or shared state/u);
+  expect(first.reason).toMatch(/make the identical call again/u);
   expect(ctx.ui.selects).toHaveLength(0);
+  expect(ctx.ui.status.get("tool-gate")).toBe("gate: 0 auto · 1 pushed back · 0 asked");
 
+  // The retry goes to the user, whose options carry no message prompt.
   ctx.ui.selectAnswers.push("Allow similar for this session");
-  expect(await h.emit("tool_call", call("bash", { command: "npm publish --tag next" }, "t2"), ctx)).toBeUndefined();
-  expect(ctx.ui.selects[0]?.options).toContain("Allow similar for this session");
+  expect(await h.emit("tool_call", call("bash", { command: "npm publish" }, "t2"), ctx)).toBeUndefined();
+  expect(ctx.ui.selects[0]?.options).toEqual(["Allow once", "Allow similar for this session", "Block"]);
   // The grant covers the same program and subcommand without asking again.
   expect(await h.emit("tool_call", call("bash", { command: "npm publish --dry-run" }, "t3"), ctx)).toBeUndefined();
   expect(ctx.ui.selects).toHaveLength(1);
 
-  // A new user turn resets the push-back.
+  // A different held call is pushed back on its own first.
+  const other: any = await h.emit("tool_call", call("bash", { command: "git push origin feature" }, "t4"), ctx);
+  expect(other.block).toBe(true);
+  expect(ctx.ui.selects).toHaveLength(1);
+  // A workaround in the same family that is still held goes to the user.
+  ctx.ui.selectAnswers.push("Block");
+  const declined: any = await h.emit("tool_call", call("bash", { command: "git push origin feature:other" }, "t5"), ctx);
+  expect(declined.reason).toMatch(/The user declined this call/u);
+  expect(ctx.ui.selects).toHaveLength(2);
+
+  // A new user turn starts over.
   await h.emit("before_agent_start", { prompt: "y" }, ctx);
-  const again: any = await h.emit("tool_call", call("bash", { command: "git push origin feature" }, "t4"), ctx);
+  const again: any = await h.emit("tool_call", call("bash", { command: "git push origin feature" }, "t6"), ctx);
   expect(again.block).toBe(true);
+  expect(ctx.ui.selects).toHaveLength(2);
 });
 
 test("project rules are judged and quoted back", async () => {
@@ -83,26 +97,40 @@ test("project rules are judged and quoted back", async () => {
   expect(result.reason).toMatch(/"Never edit files under dist\/\."/u);
 });
 
-test("always-ask calls go to the user, and are blocked without one", async () => {
+test("always-ask calls skip Jev, are pushed back first, then go to the user", async () => {
   const { h, jev, ctx } = setup(safe);
   await h.emit("before_agent_start", { prompt: "x" }, ctx);
-  ctx.ui.selectAnswers.push("Block with a message to the agent");
-  ctx.ui.inputAnswers.push("use a feature branch");
-  const result: any = await h.emit("tool_call", call("bash", { command: "git push --force origin main" }), ctx);
-  expect(result).toEqual({ block: true, reason: "The user blocked this call: use a feature branch" });
+  const first: any = await h.emit("tool_call", call("bash", { command: "git push --force origin main" }), ctx);
+  expect(first.block).toBe(true);
+  expect(first.reason).toMatch(/force-pushes main\/master/u);
+  expect(ctx.ui.selects).toHaveLength(0);
+  ctx.ui.selectAnswers.push("Allow once");
+  expect(await h.emit("tool_call", call("bash", { command: "git push --force origin main" }, "t2"), ctx)).toBeUndefined();
+  expect(ctx.ui.selects[0]?.options).toEqual(["Allow once", "Block"]);
   expect(jev.calls).toHaveLength(0);
-
-  const headless = setup(safe, { hasUI: false });
-  const blocked: any = await headless.h.emit("tool_call", call("bash", { command: "sudo ls" }), headless.ctx);
-  expect(blocked.block).toBe(true);
 });
 
-test("without UI, a later hold blocks instead of asking", async () => {
+test("without UI, a retried hold is blocked", async () => {
   const { h, ctx } = setup(risky, { hasUI: false });
   await h.emit("before_agent_start", { prompt: "x" }, ctx);
-  await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx);
+  const first: any = await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx);
+  expect(first.reason).toMatch(/make the identical call again/u);
   const second: any = await h.emit("tool_call", call("bash", { command: "npm publish" }, "t2"), ctx);
   expect(second.block).toBe(true);
+  expect(second.reason).toMatch(/no user to approve it/u);
+});
+
+test("with push-back off, holds go straight to the user", async () => {
+  const { h, ctx } = setup(risky);
+  DEFAULT_CONFIG.pushBack = false;
+  try {
+    await h.emit("before_agent_start", { prompt: "x" }, ctx);
+    ctx.ui.selectAnswers.push("Allow once");
+    expect(await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx)).toBeUndefined();
+    expect(ctx.ui.selects).toHaveLength(1);
+  } finally {
+    DEFAULT_CONFIG.pushBack = true;
+  }
 });
 
 test("when Jev is unavailable, Pi's tool hints decide", async () => {

@@ -202,8 +202,18 @@ const CREDENTIAL_PATTERNS = [
   /\.(pem|key|p12|pfx)$/u,
 ];
 
+/** Checked-in templates such as `.env.example` hold no secrets. */
+const NOT_CREDENTIALS = /\.(example|sample|template|dist|defaults?)$/u;
+
 export function isCredentialPath(file: string): boolean {
-  return CREDENTIAL_PATTERNS.some((re) => re.test(file));
+  return !NOT_CREDENTIALS.test(file) && CREDENTIAL_PATTERNS.some((re) => re.test(file));
+}
+
+/** `/`, a top-level directory, home, the project, or a parent of home or the project. */
+function isProtectedDir(resolved: string, cwd: string): boolean {
+  if (path.dirname(resolved) === "/" || resolved === "/") return true;
+  const isAncestorOf = (dir: string) => dir === resolved || dir.startsWith(`${resolved}${path.sep}`);
+  return isAncestorOf(homedir()) || isAncestorOf(path.resolve(cwd));
 }
 
 export function expandHome(file: string): string {
@@ -211,13 +221,6 @@ export function expandHome(file: string): string {
   if (file.startsWith("~/")) return path.join(homedir(), file.slice(2));
   if (file.startsWith("$HOME/")) return path.join(homedir(), file.slice(6));
   return file;
-}
-
-/** Whether `file` (relative to `cwd`) is inside `cwd` or a temp directory. */
-export function isInsideWorkspace(file: string, cwd: string): boolean {
-  const resolved = path.resolve(cwd, expandHome(file));
-  const roots = [cwd, "/tmp", "/private/tmp", "/var/folders", process.env.TMPDIR ?? "/tmp"].map((r) => path.resolve(r));
-  return roots.some((root) => resolved === root || resolved.startsWith(`${root}${path.sep}`));
 }
 
 /**
@@ -234,9 +237,8 @@ export function alwaysAskBash(command: string, cwd: string, branch?: string): st
     if (name === "sudo" || name === "doas") reasons.push("runs as root (sudo)");
     if (name === "rm" || name === "rmdir" || name === "trash") {
       for (const target of args.filter((a) => !a.startsWith("-"))) {
-        const resolved = path.resolve(cwd, expandHome(target));
-        if (resolved === "/" || resolved === homedir() || resolved === path.resolve(cwd) || !isInsideWorkspace(target, cwd)) {
-          reasons.push(`deletes ${target}, the project itself or outside it`);
+        if (isProtectedDir(path.resolve(cwd, expandHome(target)), cwd)) {
+          reasons.push(`deletes ${target}, the project, your home directory, or a parent of either`);
           break;
         }
       }
@@ -258,17 +260,13 @@ export function alwaysAskBash(command: string, cwd: string, branch?: string): st
       }
     }
   }
-  for (const target of writeRedirects(command)) {
-    if (!isInsideWorkspace(target, cwd)) reasons.push(`writes ${target} outside the project`);
-  }
   return [...new Set(reasons)];
 }
 
-/** Reasons a write/edit to `file` must be put to the user, or []. */
-export function alwaysAskPath(file: string, cwd: string): string[] {
+/** Reasons a write/edit to `file` must be held whatever Jev says, or []. */
+export function alwaysAskPath(file: string): string[] {
   const reasons: string[] = [];
   if (isCredentialPath(expandHome(file))) reasons.push(`touches credentials (${file})`);
-  if (!isInsideWorkspace(file, cwd)) reasons.push(`writes ${file} outside the project`);
   return reasons;
 }
 

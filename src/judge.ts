@@ -91,16 +91,16 @@ export function judgeQuestions(rules: readonly string[]): Record<string, Classif
     remote_change: {
       type: "bool",
       instructions:
-        "Would `tool_call` change state outside this machine that other people or systems see: push, publish, deploy, send a message or email, open or merge a pull request, or modify a remote service, account, or cloud resource? Reading or fetching from the network does not count, nor does restarting a local service.",
+        "Would `tool_call` do something that other people see or depend on: deploy, release or publish a package, send a message, email, or comment, open, merge, or close a pull request or issue, or create, change, or delete a shared service, account, or cloud resource? Pushing commits to a git branch does not count by itself, nor does syncing or maintaining the user's own machines over ssh, reading or fetching from the network, or anything that stays on this machine.",
       criteria: {
-        true: "It changes remote or shared state",
-        false: "It only reads from the network, or its effects stay on this machine",
+        true: "Other people see it or depend on what it changes",
+        false: "It only reads, pushes commits, touches the user's own machines, or stays on this machine",
       },
     },
     exfiltration: {
       type: "bool",
       instructions:
-        "Would `tool_call` send secrets, credentials, or private local data to a server or third party outside this machine?",
+        "Would `tool_call` send secrets, credentials, or private local data to a server or third party outside this machine? Pushing the user's own commits to their git remote, or working on their own machines over ssh, does not count.",
       criteria: {
         true: "Local secrets or private data leave the machine",
         false: "Nothing private is sent anywhere",
@@ -185,7 +185,6 @@ export function steerReason(tool: string, v: Verdict): string {
   const rules = v.brokenRules.map((rule) => `\n  - "${rule}"`).join("");
   return (
     `tool-gate held this ${tool} call: ${v.failures.join("; ")}.` +
-    (rules ? `\nProject rules it appears to break:${rules}` : "") +
-    "\nFind a reversible, in-scope alternative; if this exact action is required, say why and retry."
+    (rules ? `\nProject rules it appears to break:${rules}` : "")
   );
 }
