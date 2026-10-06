@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { alwaysAskBash, alwaysAskPath, bashKeys, isReadOnlyBash, splitCommand, writeRedirects } from "../src/bash.ts";
+import { alwaysAskBash, alwaysAskPath, bashKeys, isReadOnlyBash, secretGitAdds, splitCommand, writeRedirects } from "../src/bash.ts";
 
 const cwd = "/Users/me/Projects/app";
 
@@ -59,6 +59,17 @@ describe("alwaysAskBash", () => {
     expect(alwaysAskBash("echo x >> ~/.zshrc", cwd)).toEqual([]);
     expect(alwaysAskBash("cp .env.example .env.sample", cwd)).toEqual([]);
     expect(alwaysAskBash("cat ~/.ssh/config ~/.ssh/id_ed25519.pub && git add shell/.npmrc", cwd)).toEqual([]);
+    // Naming a secret is not exposing it.
+    expect(alwaysAskBash("ls -la homarr/.env && chmod 600 homarr/.env && git status --short homarr/.env", cwd)).toEqual([]);
+  });
+
+  test("git add of a secret holds unless git ignores it and there is no -f", () => {
+    const cmd = "cd /home/me/homelab && git add homarr/docker-compose.yaml homarr/.env";
+    expect(secretGitAdds(cmd, cwd)).toEqual(new Map([["/home/me/homelab", ["/home/me/homelab/homarr/.env"]]]));
+    expect(alwaysAskBash(cmd, cwd)).toEqual(["touches credentials (homarr/.env)"]);
+    expect(alwaysAskBash(cmd, cwd, "main", new Set(["/home/me/homelab/homarr/.env"]))).toEqual([]);
+    expect(secretGitAdds("cd /home/me/homelab && git add -f homarr/.env", cwd).size).toBe(0);
+    expect(alwaysAskBash("cd /home/me/homelab && git add -f homarr/.env", cwd, "main", new Set(["/home/me/homelab/homarr/.env"]))).toEqual(["touches credentials (homarr/.env)"]);
   });
   test.each([
     ["sudo rm x", /root/u],

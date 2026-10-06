@@ -6,7 +6,7 @@
 // gate falls back to Pi's tool hints.
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { alwaysAskBash, alwaysAskPath, bashKeys, isCredentialPath, expandHome, isReadOnlyBash } from "./bash.ts";
+import { alwaysAskBash, alwaysAskPath, bashKeys, expandHome, isCredentialPath, isReadOnlyBash, secretGitAdds } from "./bash.ts";
 import { loadConfig } from "./config.ts";
 import { type ClassifierUsage, type JevConfig, askJev } from "./jev.ts";
 import {
@@ -111,11 +111,25 @@ export default function toolGate(pi: ExtensionAPI) {
     return gitInfo;
   };
 
+  /** Which of these paths git ignores, asked in the directory each `git add` runs in. */
+  const ignoredByGit = async (byDir: Map<string, string[]>): Promise<Set<string>> => {
+    const ignored = new Set<string>();
+    for (const [dir, files] of byDir) {
+      try {
+        const out = await pi.exec("git", ["-C", dir, "check-ignore", "--", ...files], { timeout: 2_000 });
+        for (const line of out.stdout.split("\n")) if (line.trim()) ignored.add(path.resolve(dir, line.trim()));
+      } catch {
+        // Unknown means not ignored: the call is held.
+      }
+    }
+    return ignored;
+  };
+
   const plan = async (tool: string, input: Record<string, unknown>, cwd: string): Promise<Plan> => {
     if (config.allowTools.includes(tool)) return { kind: "allow", why: "allow list" };
     if (tool === "bash") {
       const command = String(input.command ?? "");
-      const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch);
+      const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch, await ignoredByGit(secretGitAdds(command, cwd)));
       if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(command, 6_000) };
       if (isReadOnlyBash(command, config.readOnlyCommands)) return { kind: "allow", why: "read-only command" };
       const keys = bashKeys(command, config.readOnlyCommands);

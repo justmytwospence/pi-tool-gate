@@ -234,7 +234,7 @@ export function expandHome(file: string): string {
  * Reasons this bash command must be put to the user whatever Jev says, or [] when none apply.
  * `branch` is the current git branch, for force-pushes without an explicit refspec.
  */
-export function alwaysAskBash(command: string, cwd: string, branch?: string): string[] {
+export function alwaysAskBash(command: string, cwd: string, branch?: string, ignored: ReadonlySet<string> = new Set()): string[] {
   const reasons: string[] = [];
   const parts = splitCommand(command);
   for (const tokens of parts) {
@@ -259,15 +259,60 @@ export function alwaysAskBash(command: string, cwd: string, branch?: string): st
     }
   }
   if (/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/u.test(command)) reasons.push("pipes a download into a shell");
-  for (const tokens of parts) {
+  forEachPart(command, cwd, (tokens, dir) => {
+    const p = program(tokens);
+    if (p && SECRET_SAFE.has(p.name)) return;
+    const gitSub = p?.name === "git" ? p.args.find((a) => !a.startsWith("-")) : undefined;
+    if (gitSub && GIT_SECRET_SAFE.has(gitSub)) return;
+    const forcedAdd = gitSub === "add" && p!.args.some((a) => a === "-f" || a === "--force");
     for (const token of tokens) {
-      if (isCredentialPath(expandHome(token))) {
-        reasons.push(`touches credentials (${token})`);
-        break;
-      }
+      if (!isCredentialPath(expandHome(token))) continue;
+      // Git will not stage an ignored file without -f, so naming it in `git add` exposes nothing.
+      if (gitSub === "add" && !forcedAdd && ignored.has(path.resolve(dir, expandHome(token)))) continue;
+      reasons.push(`touches credentials (${token})`);
+      return;
     }
-  }
+  });
   return [...new Set(reasons)];
+}
+
+/** Programs that can name a secret file without revealing or moving its contents. */
+const SECRET_SAFE = new Set([
+  "ls", "stat", "test", "[", "[[", "chmod", "chown", "chgrp", "touch", "du", "file", "realpath", "readlink", "basename", "dirname",
+]);
+/** Git subcommands that never stage, print or send file contents. */
+const GIT_SECRET_SAFE = new Set(["status", "check-ignore", "ls-files", "rm", "restore", "update-index"]);
+
+/** Calls `fn` for each simple command with the directory it runs in, following `cd` along the way. */
+function forEachPart(command: string, cwd: string, fn: (tokens: string[], dir: string) => void): void {
+  let dir = cwd;
+  for (const tokens of splitCommand(command)) {
+    const p = program(tokens);
+    if (p?.name === "cd") {
+      const target = p.args.find((a) => !a.startsWith("-"));
+      dir = target ? path.resolve(dir, expandHome(target)) : homedir();
+      continue;
+    }
+    fn(tokens, dir);
+  }
+}
+
+/**
+ * Secret files named in unforced `git add`s, as absolute paths, grouped by the directory git runs
+ * in: the caller asks git which are ignored and passes those to `alwaysAskBash`.
+ */
+export function secretGitAdds(command: string, cwd: string): Map<string, string[]> {
+  const byDir = new Map<string, string[]>();
+  forEachPart(command, cwd, (tokens, dir) => {
+    const p = program(tokens);
+    if (p?.name !== "git" || p.args.find((a) => !a.startsWith("-")) !== "add") return;
+    if (p.args.some((a) => a === "-f" || a === "--force")) return;
+    for (const token of p.args) {
+      if (!isCredentialPath(expandHome(token))) continue;
+      byDir.set(dir, [...(byDir.get(dir) ?? []), path.resolve(dir, expandHome(token))]);
+    }
+  });
+  return byDir;
 }
 
 /** Reasons a write/edit to `file` must be held whatever Jev says, or []. */
