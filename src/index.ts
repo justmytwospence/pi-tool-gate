@@ -6,7 +6,7 @@
 // gate falls back to Pi's tool hints.
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { alwaysAskBash, alwaysAskPath, bashKey, isCredentialPath, expandHome, isReadOnlyBash } from "./bash.ts";
+import { alwaysAskBash, alwaysAskPath, bashKeys, isCredentialPath, expandHome, isReadOnlyBash } from "./bash.ts";
 import { loadConfig } from "./config.ts";
 import { type ClassifierUsage, type JevConfig, askJev } from "./jev.ts";
 import {
@@ -56,7 +56,13 @@ const BUILTIN_READ = new Set(["read", "grep", "find", "ls"]);
 type Plan =
   | { kind: "allow"; why: string }
   | { kind: "ask"; reasons: string[]; key: string; args: string }
-  | { kind: "judge"; args: string; key: string };
+  | { kind: "judge"; args: string; key: string; similar: Similar };
+
+/** What "allow similar for this session" grants: every key, described for the user. */
+interface Similar {
+  keys: string[];
+  label: string;
+}
 
 interface Annotations {
   readOnlyHint?: boolean;
@@ -112,14 +118,26 @@ export default function toolGate(pi: ExtensionAPI) {
       const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch);
       if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(command, 6_000) };
       if (isReadOnlyBash(command, config.readOnlyCommands)) return { kind: "allow", why: "read-only command" };
-      return { kind: "judge", args: clip(command, 6_000), key: `bash:${bashKey(command)}` };
+      const keys = bashKeys(command, config.readOnlyCommands);
+      return {
+        kind: "judge",
+        args: clip(command, 6_000),
+        key: `bash:${keys.join("|")}`,
+        similar: { keys: keys.map((k) => `bash:${k}`), label: keys.map((k) => `\`${k}\``).join(", ") },
+      };
     }
     if (tool === "edit" || tool === "write") {
       const file = String(input.path ?? "");
       const reasons = alwaysAskPath(file);
       if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(JSON.stringify(input), 6_000) };
       const dir = path.dirname(path.resolve(cwd, expandHome(file)));
-      return { kind: "judge", args: clip(JSON.stringify(input), 6_000), key: `${tool}:${dir}` };
+      const shown = path.relative(cwd, dir) || ".";
+      return {
+        kind: "judge",
+        args: clip(JSON.stringify(input), 6_000),
+        key: `${tool}:${dir}`,
+        similar: { keys: [`${tool}:${dir}`], label: `${tool}s in ${shown.startsWith("..") ? dir : shown}` },
+      };
     }
     if (BUILTIN_READ.has(tool)) {
       const file = String(input.path ?? "");
@@ -129,17 +147,18 @@ export default function toolGate(pi: ExtensionAPI) {
       return { kind: "allow", why: "read-only tool" };
     }
     if (annotations(tool)?.readOnlyHint === true) return { kind: "allow", why: "read-only hint" };
-    return { kind: "judge", args: clip(JSON.stringify(input), 6_000), key: `tool:${tool}` };
+    return { kind: "judge", args: clip(JSON.stringify(input), 6_000), key: `tool:${tool}`, similar: { keys: [`tool:${tool}`], label: `${tool} calls` } };
   };
 
   /** Ask the user, one dialog at a time. */
   const ask = (
     ctx: ExtensionContext,
     q: { tool: string; input: Record<string, unknown>; held?: string; agentCase?: string; note?: string },
-    similarKey: string | undefined,
+    similar: Similar | undefined,
   ): Promise<{ block?: boolean; reason?: string } | undefined> => {
     const run = async () => {
-      const options = ["Allow once", ...(similarKey ? ["Allow similar for this session"] : []), "Block"];
+      const similarOption = similar ? `Allow similar for this session (${clip(similar.label, 80)})` : undefined;
+      const options = ["Allow once", ...(similarOption ? [similarOption] : []), "Block"];
       const title = [
         `Allow? ${describeCall(q.tool, q.input)}`,
         ...(q.held !== undefined ? [`Held: ${q.held}`] : []),
@@ -151,8 +170,8 @@ export default function toolGate(pi: ExtensionAPI) {
       const view = await callView(q.tool, q.input, ctx.cwd);
       const answer = await askApproval(ctx, { view, held: q.held, agentCase: q.agentCase, note: q.note, options }, title);
       if (answer === "Allow once") return undefined;
-      if (answer === "Allow similar for this session" && similarKey) {
-        allowSimilar.add(similarKey);
+      if (answer !== undefined && answer === similarOption && similar) {
+        for (const key of similar.keys) allowSimilar.add(key);
         return undefined;
       }
       return { block: true, reason: "The user declined this call. Do not retry it; continue without it, or ask the user how to proceed." };
@@ -194,7 +213,7 @@ export default function toolGate(pi: ExtensionAPI) {
       reason: string;
       /** Why it was held, one line for the user. */
       summary: string;
-      similarKey: string | undefined;
+      similar: Similar | undefined;
       state: Record<string, unknown>;
     },
   ) => {
@@ -228,7 +247,7 @@ export default function toolGate(pi: ExtensionAPI) {
     status(ctx);
     if (!ctx.hasUI) return { block: true, reason: `${h.reason}\nBlocked: there is no user to approve it.` };
     const agentCase = callerText(ctx.sessionManager.getBranch(), h.toolCallId);
-    return ask(ctx, { tool: h.tool, input: h.input, held: h.summary, agentCase: clip(agentCase, 4_000) }, h.similarKey);
+    return ask(ctx, { tool: h.tool, input: h.input, held: h.summary, agentCase: clip(agentCase, 4_000) }, h.similar);
   };
 
   const describeCall = (tool: string, input: Record<string, unknown>) => {
@@ -269,12 +288,12 @@ export default function toolGate(pi: ExtensionAPI) {
         family: p.key,
         reason: `tool-gate held this ${tool} call: it ${why}. Calls like this are always held, whatever Jev says.`,
         summary: why,
-        similarKey: undefined,
+        similar: undefined,
         state: await judgeStateFor(ctx, tool, p.args, []),
       });
     }
 
-    if (allowSimilar.has(p.key)) {
+    if (p.similar.keys.every((key) => allowSimilar.has(key))) {
       auto++;
       status(ctx);
       return undefined;
@@ -300,7 +319,7 @@ export default function toolGate(pi: ExtensionAPI) {
       }
       held++;
       status(ctx);
-      return ask(ctx, { tool, input, note: `Jev unavailable: ${outcome.reason}` }, p.key);
+      return ask(ctx, { tool, input, note: `Jev unavailable: ${outcome.reason}` }, p.similar);
     }
 
     if (outcome.usage) pendingUsage.set(event.toolCallId, outcome.usage);
@@ -329,7 +348,7 @@ export default function toolGate(pi: ExtensionAPI) {
       family: p.key,
       reason: steerReason(tool, v!),
       summary: `${v!.failures.join("; ")}${rules_}`,
-      similarKey: p.key,
+      similar: p.similar,
       state,
     });
   });

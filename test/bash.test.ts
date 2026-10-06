@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { alwaysAskBash, alwaysAskPath, bashKey, isReadOnlyBash, splitCommand, writeRedirects } from "../src/bash.ts";
+import { alwaysAskBash, alwaysAskPath, bashKeys, isReadOnlyBash, splitCommand, writeRedirects } from "../src/bash.ts";
 
 const cwd = "/Users/me/Projects/app";
 
@@ -93,10 +93,23 @@ test("writeRedirects ignores /dev/null and fd duplication", () => {
   expect(writeRedirects("echo a >> notes.md")).toEqual(["notes.md"]);
 });
 
-test("bashKey takes the program and first subcommand", () => {
-  expect(bashKey("npm run build -- --watch")).toBe("npm run");
-  expect(bashKey("FOO=1 cargo test -p x")).toBe("cargo test");
-  expect(bashKey("make")).toBe("make");
+test("bashKeys name what a call does, skipping shell noise and reads", () => {
+  expect(bashKeys("npm run build -- --watch")).toEqual(["npm run"]);
+  expect(bashKeys("FOO=1 cargo test -p x")).toEqual(["cargo test"]);
+  expect(bashKeys("make")).toEqual(["make"]);
+  // The directory a call starts in does not change what it is.
+  expect(bashKeys("cd /tmp/a && docker restart authelia")).toEqual(["docker restart authelia"]);
+  expect(bashKeys("cd ~/b; docker restart authelia >/dev/null")).toEqual(["docker restart authelia"]);
+  expect(bashKeys("cd /home/me/homelab && docker compose -f homepage/docker-compose.yaml up -d")).toEqual(["docker compose up"]);
+  // Reads drop out; every command that does more is a key.
+  expect(bashKeys("cd x && cp db /tmp/abs.sqlite && uv run --no-project python3 q.py | head")).toEqual(["cp", "uv run"]);
+  expect(bashKeys("echo -n 'route: '; curl -s -X POST https://x.example/api")).toEqual(["curl"]);
+  expect(bashKeys("for d in a b; do docker restart $d; done")).toEqual(["docker restart"]);
+  expect(bashKeys("python3 - <<'EOF'\nimport json\nEOF")).toEqual(["python3"]);
+  expect(bashKeys("gh repo create me/x --public")).toEqual(["gh repo create"]);
+  // Substitutions are not commands of their own; all-read calls share one key.
+  expect(bashKeys("cd x && IP=$(docker inspect h --format '{{.Id}}' | awk '{print $1}'); curl -s -X POST http://$IP/api")).toEqual(["curl"]);
+  expect(bashKeys("cd x && grep -c Admin $(ls cfg) > /tmp/out.txt")).toEqual(["reads with substitutions or redirects"]);
 });
 
 describe("read-only CLIs and fetches", () => {

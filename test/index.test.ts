@@ -68,13 +68,14 @@ test("a held call is pushed back with Jev's reasons and suggestion; the agent's 
 
   // The agent makes its case beside the identical call; the user sees both, with no message prompt.
   branch.push(assistantEntry("Publishing is the whole point of the release you asked for.", [{ type: "toolCall", id: "t2", name: "bash", arguments: {} }]));
-  ctx.ui.selectAnswers.push("Allow similar for this session");
+  ctx.ui.selectAnswers.push("Allow similar for this session (`npm publish`)");
   expect(await h.emit("tool_call", call("bash", { command: "npm publish" }, "t2"), ctx)).toBeUndefined();
   expect(ctx.ui.selects[0]?.title).toMatch(/Held: it changes something other people see/u);
   expect(ctx.ui.selects[0]?.title).toMatch(/Agent: Publishing is the whole point/u);
-  expect(ctx.ui.selects[0]?.options).toEqual(["Allow once", "Allow similar for this session", "Block"]);
-  // The grant covers the same program and subcommand without asking again.
+  expect(ctx.ui.selects[0]?.options).toEqual(["Allow once", "Allow similar for this session (`npm publish`)", "Block"]);
+  // The grant covers the same program and subcommand without asking again, wherever it starts.
   expect(await h.emit("tool_call", call("bash", { command: "npm publish --dry-run" }, "t3"), ctx)).toBeUndefined();
+  expect(await h.emit("tool_call", call("bash", { command: "cd pkg && echo go; npm publish" }, "t4"), ctx)).toBeUndefined();
   expect(ctx.ui.selects).toHaveLength(1);
 
   // A different held call is pushed back on its own first.

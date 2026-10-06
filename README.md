@@ -45,6 +45,13 @@ call is risky and the agent could not find a way around it.
    session, or block. Without a UI (print and JSON modes) the retry is blocked; pi-subagents
    forwards a subagent's question to you. Set `"pushBack": false` to be asked straight away.
 
+"Allow similar" names what it grants, e.g. ``(`docker restart authelia`, `python3`)``. A bash
+call is keyed by each command in it that does more than read, as program plus subcommand when it
+has one (`docker compose up`, `gh repo create`, `bin/homelab status`); `cd`, `echo`, loop
+headers, assignments and `$(...)` substitutions are skipped. A later call runs unasked when every
+one of its keys was granted, whatever directory it starts in. Calls whose commands all only read
+share one key. Edits and writes are keyed by directory, other tools by name.
+
 In Pi's terminal UI the question shows the call itself, highlighted: a long bash command one step
 per line (only whitespace changes), an edit or overwrite as a diff against the file with line
 numbers, a new file in its language, any other tool's input as JSON. Below it are why it was held

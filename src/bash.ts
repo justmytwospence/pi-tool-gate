@@ -141,7 +141,12 @@ export function isReadOnlyBash(command: string, extra: readonly string[] = []): 
   if (writeRedirects(command).length) return false;
   const parts = splitCommand(command);
   if (parts.length === 0) return false;
-  return parts.every((tokens) => {
+  return parts.every((tokens) => isReadOnlyPart(tokens, extra));
+}
+
+/** Whether one simple command (from `splitCommand`) only reads. */
+function isReadOnlyPart(tokens: string[], extra: readonly string[]): boolean {
+  {
     const p = program(tokens);
     if (!p) return true;
     const { name, args } = p;
@@ -186,7 +191,7 @@ export function isReadOnlyBash(command: string, extra: readonly string[] = []): 
     if (name === "awk" && args.some((a) => /system\(|>\s*"/u.test(a))) return false;
     if (name === "env" && args.some((a) => !a.startsWith("-") && !a.includes("="))) return false;
     return true;
-  });
+  }
 }
 
 /**
@@ -272,11 +277,107 @@ export function alwaysAskPath(file: string): string[] {
   return reasons;
 }
 
-/** A key for "allow similar for this session": the first two words of a bash command. */
-export function bashKey(command: string): string {
-  const first = splitCommand(command)[0] ?? [];
-  const p = program(first);
-  if (!p) return command.trim().slice(0, 40);
-  const sub = p.args.find((a) => !a.startsWith("-"));
-  return sub ? `${p.name} ${sub}` : p.name;
+/** Commands that only steer the shell; they say nothing about what a call does. */
+const SHELL_NOISE = new Set([
+  "cd", "pushd", "popd", "echo", "printf", "export", "unset", "set", "true", "false", ":", "sleep", "test", "[", "[[",
+  "local", "read", "wait", "shift", "return", "exit", "break", "continue",
+]);
+/** Keywords that may lead a command (`if grep ...`, `do docker restart x`). */
+const LEADING_KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "{", "}", "!", "time"]);
+/** Parts that are loop or case headers and closers, not commands. */
+const NOT_COMMANDS = new Set(["for", "case", "select", "function", "done", "fi", "esac"]);
+/** CLIs whose second word also matters: `docker compose up`, `gh repo create`, `kubectl get pods`. */
+const TWO_LEVEL = new Set(["docker", "podman", "gh", "kubectl", "gcloud", "aws", "az", "helm"]);
+/** CLIs whose first word is a subcommand (`git push`, `npm run`); for other programs it is usually a file. */
+const SUBCOMMAND_CLIS = new Set([
+  ...TWO_LEVEL, "git", "npm", "pnpm", "yarn", "bun", "deno", "npx", "bunx", "uv", "uvx", "pip", "pip3", "poetry", "cargo", "rustup",
+  "go", "systemctl", "launchctl", "brew", "apt", "apt-get", "dnf", "snap", "terraform", "tofu", "pulumi", "make", "just", "vercel",
+  "wrangler", "fly", "flyctl", "tailscale", "herdr", "tmux", "pi", "claude", "codex", "plugins", "worktree", "bd", "stow", "docker-compose",
+]);
+const WORD = /^[a-z][a-z0-9_:-]*$/u;
+
+/** The command with here-document bodies removed: they are input, not commands. */
+function withoutHeredocBodies(command: string): string {
+  const out: string[] = [];
+  const pending: string[] = [];
+  for (const line of command.split("\n")) {
+    if (pending.length) {
+      if (line.trim() === pending[0]) pending.shift();
+      continue;
+    }
+    out.push(line);
+    for (const m of line.matchAll(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/gu)) pending.push(m[2] as string);
+  }
+  return out.join("\n");
+}
+
+/** What one simple command does, as `program [subcommand [subcommand]]`, or undefined for shell noise. */
+function partKey(tokens: string[]): string | undefined {
+  let i = 0;
+  while (i < tokens.length && LEADING_KEYWORDS.has(tokens[i] as string)) i++;
+  const rest = tokens.slice(i);
+  const head = rest[0];
+  if (head === undefined || NOT_COMMANDS.has(head) || /\)$|\(\)\{?$/u.test(head)) return undefined;
+  const p = program(rest);
+  if (!p || SHELL_NOISE.has(p.name) || !/^[A-Za-z_][A-Za-z0-9_.+-]*$/u.test(p.name)) return undefined;
+  const positional = p.args.filter((a) => !a.startsWith("-"));
+  const first = positional[0];
+  // Project scripts (`bin/homelab status`) usually take subcommands too.
+  const invoked = rest.find((t) => path.basename(t) === p.name) ?? "";
+  const takesSubcommand = SUBCOMMAND_CLIS.has(p.name) || invoked.includes("/");
+  if (first === undefined || !WORD.test(first) || !takesSubcommand) return p.name;
+  if (!TWO_LEVEL.has(p.name)) return `${p.name} ${first}`;
+  const second = positional.slice(1).find((a) => WORD.test(a));
+  return second ? `${p.name} ${first} ${second}` : `${p.name} ${first}`;
+}
+
+/**
+ * Keys for "allow similar for this session": one per command in the call that does more than read,
+ * skipping `cd`, `echo`, loop headers and the like. A later call is allowed when every key it has
+ * was granted, so `cd /tmp/a && docker restart x` and `cd ~/b; docker restart x` match, and a grant
+ * for `docker restart` never covers `rm`.
+ */
+export function bashKeys(command: string, extraReadOnly: readonly string[] = []): string[] {
+  const parts = splitCommand(withoutSubstitutions(withoutHeredocBodies(command)));
+  const keys = new Set<string>();
+  for (const tokens of parts) {
+    if (isReadOnlyPart(tokens, extraReadOnly)) continue;
+    const key = partKey(tokens);
+    if (key) keys.add(key);
+  }
+  // Every command only reads, and a substitution or redirect is what kept the call from running
+  // unasked: one grant covers such calls.
+  return keys.size ? [...keys].sort() : [READS_KEY];
+}
+
+/** The "allow similar" key for calls whose commands all only read. */
+export const READS_KEY = "reads with substitutions or redirects";
+
+/** `$(...)` and backtick substitutions outside single quotes replaced by a placeholder word. */
+function withoutSubstitutions(command: string): string {
+  let out = "";
+  let single = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i] as string;
+    if (c === "'" ) single = !single;
+    if (!single && c === "$" && command[i + 1] === "(") {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < command.length; j++) {
+        if (command[j] === "(") depth++;
+        else if (command[j] === ")" && --depth === 0) break;
+      }
+      out += "_";
+      i = j;
+      continue;
+    }
+    if (!single && c === "`") {
+      const end = command.indexOf("`", i + 1);
+      out += "_";
+      i = end < 0 ? command.length : end;
+      continue;
+    }
+    out += c;
+  }
+  return out;
 }
