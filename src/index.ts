@@ -22,7 +22,7 @@ import {
 } from "./judge.ts";
 import { askApproval } from "./prompt.ts";
 import { loadRules } from "./rules.ts";
-import { callerText, clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
+import { agentBeforeLatestUser, callerText, clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
 import { callView } from "./view.ts";
 
 export interface GateConfig extends Record<string, unknown> {
@@ -167,6 +167,7 @@ export default function toolGate(pi: ExtensionAPI) {
     const branch = ctx.sessionManager.getBranch();
     return judgeState({
       userRequest: recentUserMessages(branch, 3).map((text, i, all) => clip(text, i === all.length - 1 ? 3_000 : 1_000)),
+      agentBefore: clipTail(agentBeforeLatestUser(branch), 1_500),
       recentIntent: clipTail(recentTexts(branch).assistant, 2_000),
       cwd: ctx.cwd,
       git: await git(ctx.cwd),

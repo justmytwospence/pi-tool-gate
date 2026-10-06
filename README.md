@@ -10,19 +10,24 @@ call is risky and the agent could not find a way around it.
    `sqlite3 -readonly`, `dig`, ... with no writing redirects or command substitution), and the tools
    in `allowTools`. A short list is always held, whatever Jev says: `sudo`, deleting `/`, a
    top-level directory, your home directory, the project, or a parent of either, force-pushing
-   main/master, `curl … | sh`, and touching credential files (`.env*` but not `.env.example`,
-   `~/.ssh`, `auth.json`, keys). Writes and deletes elsewhere outside the project go to Jev.
-2. **Jev for the gray zone, holding only on confident danger.** Edits, writes, other bash commands,
-   and MCP or extension tools without a read-only hint go to [Jev](https://docs.typesafe.ai) in one
-   request (about 250 ms). A call is held only when Jev is confident it is dangerous:
+   main/master, `curl … | sh`, and touching files that hold live secrets (`.env*` but not
+   `.env.example`, private SSH keys, `auth.json`, `.aws/credentials`, `.netrc`, `*.pem`/`*.key`;
+   not SSH config, public keys or `.npmrc`). Writes and deletes elsewhere outside the project go to Jev.
+2. **Jev for the gray zone, calibrated like Claude Code's auto mode.** Edits, writes, other bash
+   commands, and MCP or extension tools without a read-only hint go to
+   [Jev](https://docs.typesafe.ai) in one request (about 250 ms). Calls are allowed by default.
+   Unless you asked for the action, or said yes when the agent offered it (Claude Code's "named"
+   exception, >= 0.8), a call is held when Jev is confident that:
    - it cannot be undone (>= 0.9),
    - it does something other people see or depend on (>= 0.85: deploy, publish, post a message,
-     open or merge a PR, modify a shared or cloud resource) and you did not directly ask for it
-     (< 0.8); pushing commits to a git branch and maintaining your own machines over ssh do not count,
-   - it sends secrets or private data off the machine (>= 0.8),
+     open or merge a PR, create a public repo, modify a shared or cloud resource); pushing commits
+     to a git branch and maintaining your own machines over ssh do not count,
    - its impact if unwanted is 2.5 or more of 3 (lost data, leaked secrets, broken production),
-   - it is clearly unrelated to your request (< 0.1) and could do harm (impact >= 1.5),
-   - or it breaks a project rule (>= 0.7).
+   - or it is clearly unrelated to your request (< 0.1) and would do significant damage (impact >= 2).
+
+   Whatever you said, a call is held when it sends secrets or private data off the machine
+   (>= 0.8) or breaks a project rule (>= 0.7). Jev also sees the agent's message your newest one
+   replies to, so "yes" to "Want me to push and sync?" counts as asking for the push and sync.
 
    Doubt alone never holds a call: an investigation command Jev is unsure is on-task still runs.
    These bars follow the published Jev gates (pi-warden holds at 0.9 irreversible, pi-jev at 0.9
@@ -81,7 +86,7 @@ thresholds.
   "jev": { "enabled": true, "provider": "typesafe", "model": "jev-latest", "timeoutMs": 3000 },
   "thresholds": {
     "irreversible": 0.9, "remoteChange": 0.85, "requested": 0.8, "exfiltration": 0.8,
-    "impact": 2.5, "offTask": 0.1, "offTaskImpact": 1.5, "rule": 0.7
+    "impact": 2.5, "offTask": 0.1, "offTaskImpact": 2, "rule": 0.7
   },
   "allowTools": ["codemode", "todo", "web_search"],
   "readOnlyCommands": ["bd"],

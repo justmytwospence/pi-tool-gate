@@ -1,0 +1,28 @@
+{
+  "id": "bbced527e",
+  "name": "replay real decisions",
+  "command": "cd ~/Projects/pi-tool-gate && GATE_REPLAY=/tmp/replay.json npx vitest run --config vitest.eval.config.ts eval/replay.eval.ts --silent=false 2>&1 | grep -vE \"^\\s*$|stdout\" > /tmp/replay-new.txt; tail -3 /tmp/replay-new.txt",
+  "status": "completed",
+  "outputPath": ".pi/tasks/01a10e3f-6f34-7724-b3e3-5ed2bbdf9532-6020/bbced527e.output",
+  "cwd": "/Users/spencerboucher/Projects/pi-tool-gate",
+  "startTime": 1791257325280,
+  "endTime": 1791257363500,
+  "exitCode": 0,
+  "signal": null,
+  "pid": 31255,
+  "bytesWritten": 91,
+  "isAgent": false,
+  "surviveReload": false,
+  "notified": true,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true,
+  "timeoutSeconds": 1800,
+  "shellPolicy": {
+    "policy": "inherit",
+    "executable": "/bin/zsh",
+    "argvPrefix": [
+      "-c"
+    ],
+    "dialect": "posix"
+  }
+}

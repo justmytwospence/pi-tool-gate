@@ -189,15 +189,17 @@ export function isReadOnlyBash(command: string, extra: readonly string[] = []): 
   });
 }
 
+/**
+ * Files that hold live secrets. Like Claude Code's auto mode, only secrets themselves are fixed
+ * holds: SSH config and public keys, and config files that usually carry no token (`.npmrc`), are
+ * left to Jev, whose exfiltration check still catches sending them away.
+ */
 const CREDENTIAL_PATTERNS = [
   /(^|\/)\.env(\.[^/]*)?$/u,
-  /(^|\/)\.ssh(\/|$)/u,
   /(^|\/)auth\.json$/u,
-  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/u,
+  /(^|\/)id_(rsa|ed25519|ecdsa|dsa)$/u,
   /(^|\/)\.aws\/credentials$/u,
   /(^|\/)\.netrc$/u,
-  /(^|\/)\.npmrc$/u,
-  /(^|\/)\.pypirc$/u,
   /(^|\/)credentials(\.json)?$/u,
   /\.(pem|key|p12|pfx)$/u,
 ];

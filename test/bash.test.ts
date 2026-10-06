@@ -58,6 +58,7 @@ describe("alwaysAskBash", () => {
     expect(alwaysAskBash("rm -rf ../other/dist ~/.cache/foo", cwd)).toEqual([]);
     expect(alwaysAskBash("echo x >> ~/.zshrc", cwd)).toEqual([]);
     expect(alwaysAskBash("cp .env.example .env.sample", cwd)).toEqual([]);
+    expect(alwaysAskBash("cat ~/.ssh/config ~/.ssh/id_ed25519.pub && git add shell/.npmrc", cwd)).toEqual([]);
   });
   test.each([
     ["sudo rm x", /root/u],

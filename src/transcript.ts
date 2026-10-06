@@ -31,6 +31,25 @@ export function recentTexts(entries: readonly unknown[]): { user: string; assist
   return { user, assistant };
 }
 
+/**
+ * The agent's last message before the newest user message: what a short reply like "yes" or
+ * "do it" answers.
+ */
+export function agentBeforeLatestUser(entries: readonly unknown[]): string {
+  let seenUser = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as EntryLike;
+    if (entry?.type !== "message" || !entry.message) continue;
+    const text = messageText(entry.message.content).trim();
+    if (!text) continue;
+    if (entry.message.role === "user") {
+      if (seenUser) return "";
+      seenUser = true;
+    } else if (seenUser && entry.message.role === "assistant") return text;
+  }
+  return "";
+}
+
 export function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
