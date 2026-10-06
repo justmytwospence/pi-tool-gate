@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { agentDir } from "./config.ts";
+import { agentDir, sharedConfigDir } from "./config.ts";
 
 export const RULES_FILE = "tool-gate-rules.md";
 export const MAX_RULES = 30;
@@ -43,8 +43,16 @@ function readRules(file: string): string[] {
   }
 }
 
-/** Project rules (`<cwd>/.pi/tool-gate-rules.md`) first, then global ones, at most 30. */
+/**
+ * Project rules (`<cwd>/.agents/tool-gate-rules.md`, then `<cwd>/.pi/`) first, then user ones
+ * (`~/.config/agents/`, then `~/.pi/agent/`); duplicates dropped, at most 30.
+ */
 export function loadRules(cwd: string): string[] {
-  const rules = [...readRules(path.join(cwd, ".pi", RULES_FILE)), ...readRules(path.join(agentDir(), RULES_FILE))];
-  return [...new Set(rules)].slice(0, MAX_RULES);
+  const files = [
+    path.join(cwd, ".agents", RULES_FILE),
+    path.join(cwd, ".pi", RULES_FILE),
+    path.join(sharedConfigDir(), RULES_FILE),
+    path.join(agentDir(), RULES_FILE),
+  ];
+  return [...new Set(files.flatMap(readRules))].slice(0, MAX_RULES);
 }

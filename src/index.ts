@@ -2,8 +2,8 @@
 // a short list of dangerous ones is always held); Jev, through Pi's own classifier models, judges
 // the gray zone. A held call is first blocked with Jev's explanation and suggested workaround; the
 // agent works around it or makes its case and retries, and only that retry is put to you, with the
-// case. Project rules in `.pi/tool-gate-rules.md` are checked on every judged call. Without Jev the
-// gate falls back to Pi's tool hints.
+// case. Project rules in `.agents/tool-gate-rules.md` (or `.pi/`) are checked on every judged
+// call. Without Jev the gate falls back to Pi's tool hints.
 import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { alwaysAskBash, alwaysAskPath, bashKeys, expandHome, isCredentialPath, isReadOnlyBash, secretGitAdds } from "./bash.ts";

@@ -66,8 +66,10 @@ Requires Pi 0.99 or newer for classifier models.
 
 ## Project rules
 
-Each top-level bullet in `<project>/.pi/tool-gate-rules.md` and `~/.pi/agent/tool-gate-rules.md`
-is a rule (at most 30), checked on every judged call:
+Each top-level bullet in `<project>/.agents/tool-gate-rules.md`, `<project>/.pi/tool-gate-rules.md`,
+`~/.config/agents/tool-gate-rules.md` and `~/.pi/agent/tool-gate-rules.md` (read in that order,
+duplicates dropped, at most 30) is a rule, checked on every judged call. The `.agents` and
+`~/.config/agents` files are shared with the opencode and Claude Code ports of this plugin:
 
 ```markdown
 - Migrations are append-only: never edit an existing migration, add a new one.
@@ -85,7 +87,11 @@ thresholds.
 
 ## Settings
 
-`~/.pi/agent/tool-gate.json`, with `<project>/.pi/tool-gate.json` merged on top:
+`~/.config/agents/tool-gate.json` (`$XDG_CONFIG_HOME` honored) and `<project>/.agents/tool-gate.json`
+are shared with the opencode and Claude Code ports of this plugin; `~/.pi/agent/tool-gate.json` and
+`<project>/.pi/tool-gate.json` are pi-only overrides. They are read in the order shared user, pi
+user, shared project, pi project, each merged on top of the last (objects merge, other values
+replace); keys a port does not know are ignored.
 
 ```json
 {
