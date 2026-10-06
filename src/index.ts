@@ -20,8 +20,10 @@ import {
   verdict,
   workaroundQuestion,
 } from "./judge.ts";
+import { askApproval } from "./prompt.ts";
 import { loadRules } from "./rules.ts";
 import { callerText, clip, clipTail, recentTexts, recentUserMessages } from "./transcript.ts";
+import { callView } from "./view.ts";
 
 export interface GateConfig extends Record<string, unknown> {
   enabled: boolean;
@@ -133,12 +135,21 @@ export default function toolGate(pi: ExtensionAPI) {
   /** Ask the user, one dialog at a time. */
   const ask = (
     ctx: ExtensionContext,
-    title: string,
+    q: { tool: string; input: Record<string, unknown>; held?: string; agentCase?: string; note?: string },
     similarKey: string | undefined,
   ): Promise<{ block?: boolean; reason?: string } | undefined> => {
     const run = async () => {
       const options = ["Allow once", ...(similarKey ? ["Allow similar for this session"] : []), "Block"];
-      const answer = await ctx.ui.select(title, options);
+      const title = [
+        `Allow? ${describeCall(q.tool, q.input)}`,
+        ...(q.held !== undefined ? [`Held: ${q.held}`] : []),
+        ...(q.held !== undefined || q.agentCase !== undefined
+          ? [`Agent: ${q.agentCase ? clip(q.agentCase.replace(/\s+/gu, " "), 600) : "(gave no reason)"}`]
+          : []),
+        ...(q.note ? [`(${q.note})`] : []),
+      ].join("\n");
+      const view = await callView(q.tool, q.input, ctx.cwd);
+      const answer = await askApproval(ctx, { view, held: q.held, agentCase: q.agentCase, note: q.note, options }, title);
       if (answer === "Allow once") return undefined;
       if (answer === "Allow similar for this session" && similarKey) {
         allowSimilar.add(similarKey);
@@ -216,11 +227,7 @@ export default function toolGate(pi: ExtensionAPI) {
     status(ctx);
     if (!ctx.hasUI) return { block: true, reason: `${h.reason}\nBlocked: there is no user to approve it.` };
     const agentCase = callerText(ctx.sessionManager.getBranch(), h.toolCallId);
-    const title =
-      `Allow? ${describeCall(h.tool, h.input)}\n` +
-      `Held: ${h.summary}\n` +
-      `Agent: ${agentCase ? clip(agentCase.replace(/\s+/gu, " "), 600) : "(gave no reason)"}`;
-    return ask(ctx, title, h.similarKey);
+    return ask(ctx, { tool: h.tool, input: h.input, held: h.summary, agentCase: clip(agentCase, 4_000) }, h.similarKey);
   };
 
   const describeCall = (tool: string, input: Record<string, unknown>) => {
@@ -292,7 +299,7 @@ export default function toolGate(pi: ExtensionAPI) {
       }
       held++;
       status(ctx);
-      return ask(ctx, `Allow? ${describeCall(tool, input)}\n(Jev unavailable: ${outcome.reason})`, p.key);
+      return ask(ctx, { tool, input, note: `Jev unavailable: ${outcome.reason}` }, p.key);
     }
 
     if (outcome.usage) pendingUsage.set(event.toolCallId, outcome.usage);

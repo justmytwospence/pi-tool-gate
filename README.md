@@ -40,6 +40,12 @@ call is risky and the agent could not find a way around it.
    session, or block. Without a UI (print and JSON modes) the retry is blocked; pi-subagents
    forwards a subagent's question to you. Set `"pushBack": false` to be asked straight away.
 
+In Pi's terminal UI the question shows the call itself, highlighted: a long bash command one step
+per line (only whitespace changes), an edit or overwrite as a diff against the file with line
+numbers, a new file in its language, any other tool's input as JSON. Below it are why it was held
+and the agent's case, rendered as Markdown. Long parts are cut short; ctrl+o expands them, Esc
+blocks. RPC clients and forwarded subagent questions get a plain one-line summary instead.
+
 Jev runs through Pi's own classifier models (`ctx.modelRegistry.classify`), so it uses Pi's
 credentials (`TYPESAFE_API_KEY` for the `typesafe` provider) and its token usage is added to the
 gated tool's result. When Jev is unavailable, the gate asks you about calls Pi's tool hints flag
