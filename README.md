@@ -64,6 +64,11 @@ gated tool's result. When Jev is unavailable, the gate asks you about calls Pi's
 (the confirmation rule from Pi's extension docs) and allows the rest; without a UI it allows them.
 Requires Pi 0.99 or newer for classifier models.
 
+**herdr.** While an approval dialog is open, the gate holds `herdr:blocked` on pi's event bus
+(`{ active: true, label: "Allow? bash: ..." }`, then `{ active: false }` when it closes), so
+[herdr](https://herdr.dev) shows the pane as blocked. Outside herdr nothing listens and the events
+do nothing.
+
 ## Project rules
 
 Each top-level bullet in `<project>/.agents/tool-gate-rules.md`, `<project>/.pi/tool-gate-rules.md`,

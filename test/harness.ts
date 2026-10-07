@@ -30,6 +30,8 @@ export function harness(options: { tools?: any[]; exec?: (cmd: string, args: str
   const shortcuts = new Map<string, any>();
   const entries: Array<{ customType: string; data: unknown }> = [];
   const messages: any[] = [];
+  /** Everything emitted on pi's event bus, in order. */
+  const events: Array<{ channel: string; data: any }> = [];
   let thinking = "high";
   const thinkingChanges: string[] = [];
   const pi = {
@@ -54,7 +56,12 @@ export function harness(options: { tools?: any[]; exec?: (cmd: string, args: str
       thinkingChanges.push(level);
       void emit("thinking_level_select", { type: "thinking_level_select", level, previousLevel: "?" });
     },
-    events: { emit: () => undefined, on: () => () => undefined },
+    events: {
+      emit: (channel: string, data: unknown) => {
+        events.push({ channel, data });
+      },
+      on: () => () => undefined,
+    },
   };
   async function emit(event: string, payload: any, ctx?: any) {
     let result: unknown;
@@ -91,7 +98,7 @@ export function harness(options: { tools?: any[]; exec?: (cmd: string, args: str
     };
     return lastCtx;
   }
-  return { pi: pi as any, handlers, commands, shortcuts, entries, messages, emit, ctx, thinkingChanges, get thinking() { return thinking; } };
+  return { pi: pi as any, handlers, commands, shortcuts, entries, messages, events, emit, ctx, thinkingChanges, get thinking() { return thinking; } };
 }
 
 export function userEntry(text: string) {

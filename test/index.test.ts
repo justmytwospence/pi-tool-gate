@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import toolGate, { DEFAULT_CONFIG } from "../src/index.ts";
 import { assistantEntry, fakeJev, harness, userEntry } from "./harness.ts";
 
@@ -181,4 +181,81 @@ test("/gate off disables the gate for the session", async () => {
   await h.commands.get("gate").handler("off", ctx);
   expect(await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx)).toBeUndefined();
   expect(jev.calls).toHaveLength(0);
+});
+
+describe("herdr", () => {
+  /** A held call that goes straight to the user, with ui.select recorded among the bus events. */
+  function held(select: (title: string) => Promise<string | undefined>) {
+    const { h, ctx } = setup(risky);
+    ctx.ui.select = async (title: string) => {
+      h.events.push({ channel: "ui.select", data: title });
+      return select(title);
+    };
+    return { h, ctx };
+  }
+
+  test("an open approval dialog holds herdr:blocked, whatever the answer", async () => {
+    DEFAULT_CONFIG.pushBack = false;
+    try {
+      for (const answer of ["Allow once", "Block"]) {
+        const { h, ctx } = held(async () => answer);
+        await h.emit("before_agent_start", { prompt: "x" }, ctx);
+        const result: any = await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx);
+        expect(result?.block).toBe(answer === "Block" ? true : undefined);
+        expect(h.events.map((e) => e.channel)).toEqual(["herdr:blocked", "ui.select", "herdr:blocked"]);
+        expect(h.events[0]?.data).toEqual({ active: true, label: "Allow? bash: npm publish" });
+        expect(h.events[2]?.data).toEqual({ active: false });
+      }
+    } finally {
+      DEFAULT_CONFIG.pushBack = true;
+    }
+  });
+
+  test("the hold is released when the dialog throws", async () => {
+    DEFAULT_CONFIG.pushBack = false;
+    try {
+      const { h, ctx } = held(async () => {
+        throw new Error("dialog failed");
+      });
+      await h.emit("before_agent_start", { prompt: "x" }, ctx);
+      await expect(h.emit("tool_call", call("bash", { command: "npm publish" }), ctx)).rejects.toThrow(/dialog failed/u);
+      expect(h.events.map((e) => [e.channel, e.data.active ?? "select"])).toEqual([
+        ["herdr:blocked", true],
+        ["ui.select", "select"],
+        ["herdr:blocked", false],
+      ]);
+    } finally {
+      DEFAULT_CONFIG.pushBack = true;
+    }
+  });
+
+  test("a long call is clipped in the label; a throwing listener does not change the decision", async () => {
+    DEFAULT_CONFIG.pushBack = false;
+    try {
+      const { h, ctx } = held(async () => "Allow once");
+      h.pi.events.emit = () => {
+        throw new Error("listener");
+      };
+      await h.emit("before_agent_start", { prompt: "x" }, ctx);
+      expect(await h.emit("tool_call", call("bash", { command: `npm publish ${"--tag next ".repeat(20)}` }), ctx)).toBeUndefined();
+      expect(h.events.map((e) => e.channel)).toEqual(["ui.select"]);
+
+      const long = held(async () => "Allow once");
+      await long.h.emit("before_agent_start", { prompt: "x" }, long.ctx);
+      await long.h.emit("tool_call", call("bash", { command: `npm publish ${"--tag next ".repeat(20)}` }), long.ctx);
+      const label: string = long.h.events[0]?.data.label;
+      expect(label).toHaveLength(60);
+      expect(label).toMatch(/^Allow\? bash: npm publish --tag next .*…$/u);
+    } finally {
+      DEFAULT_CONFIG.pushBack = true;
+    }
+  });
+
+  test("pushed-back calls never hold it", async () => {
+    const { h, ctx } = setup(risky);
+    await h.emit("before_agent_start", { prompt: "x" }, ctx);
+    const first: any = await h.emit("tool_call", call("bash", { command: "npm publish" }), ctx);
+    expect(first.block).toBe(true);
+    expect(h.events).toEqual([]);
+  });
 });

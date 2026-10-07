@@ -8,6 +8,7 @@ import path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { alwaysAskBash, alwaysAskPath, bashKeys, expandHome, isCredentialPath, isReadOnlyBash, secretGitAdds } from "./bash.ts";
 import { loadConfig } from "./config.ts";
+import { whileBlocked } from "./herdr.ts";
 import { type ClassifierUsage, type JevConfig, askJev } from "./jev.ts";
 import {
   DEFAULT_THRESHOLDS,
@@ -182,7 +183,11 @@ export default function toolGate(pi: ExtensionAPI) {
         ...(q.note ? [`(${q.note})`] : []),
       ].join("\n");
       const view = await callView(q.tool, q.input, ctx.cwd);
-      const answer = await askApproval(ctx, { view, held: q.held, agentCase: q.agentCase, note: q.note, options }, title);
+      // Held only while the dialog is open, so queued approvals do not report blocked early.
+      const label = clip(`Allow? ${describeCall(q.tool, q.input)}`.replace(/\s+/gu, " "), 60);
+      const answer = await whileBlocked(pi.events, label, () =>
+        askApproval(ctx, { view, held: q.held, agentCase: q.agentCase, note: q.note, options }, title),
+      );
       if (answer === "Allow once") return undefined;
       if (answer !== undefined && answer === similarOption && similar) {
         for (const key of similar.keys) allowSimilar.add(key);
