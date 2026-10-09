@@ -256,7 +256,7 @@ export default function toolGate(pi: ExtensionAPI) {
         reason:
           `${h.reason}\n${advice}\nThe user has not been asked. ` +
           (noWorkaround ? "If the call still seems worth it, " : "Get the job done another way if you can. If no workaround is good enough, ") +
-          "make your case: in a short message to the user, say why this exact call is needed" +
+          "make your case: in a short visible message to the user (not only in your thinking), say why this exact call is needed" +
           (noWorkaround ? "" : " and why the workarounds fall short") +
           ", then make the identical call in that same message. tool-gate will show your case to the user and ask them to approve it. " +
           "If it is not worth raising, carry on without it.",

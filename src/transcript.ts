@@ -70,7 +70,24 @@ export function recentUserMessages(entries: readonly unknown[], count: number): 
   return out;
 }
 
-/** Text of the assistant message that issued tool call `toolCallId` (the agent's words beside it). */
+/** Readable thinking in a message's content blocks (redacted or encrypted-only blocks give nothing). */
+export function thinkingText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((block) => {
+      if (!block || typeof block !== "object") return [];
+      const b = block as { type?: unknown; thinking?: unknown; redacted?: unknown };
+      if (b.type !== "thinking" || b.redacted || typeof b.thinking !== "string") return [];
+      const text = b.thinking.trim();
+      return text ? [text] : [];
+    })
+    .join("\n\n");
+}
+
+/**
+ * The agent's words beside tool call `toolCallId`: the visible text of the assistant message that
+ * issued it, or, when it wrote none (models often make their case only in thinking), its thinking.
+ */
 export function callerText(entries: readonly unknown[], toolCallId: string): string {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i] as EntryLike;
@@ -79,7 +96,7 @@ export function callerText(entries: readonly unknown[], toolCallId: string): str
     const issued =
       Array.isArray(content) &&
       content.some((b) => b && typeof b === "object" && (b as { type?: unknown }).type === "toolCall" && (b as { id?: unknown }).id === toolCallId);
-    if (issued) return messageText(content).trim();
+    if (issued) return messageText(content).trim() || thinkingText(content);
   }
   return "";
 }
