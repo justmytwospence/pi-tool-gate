@@ -137,6 +137,18 @@ test("always-ask calls skip the judgment, are pushed back first, then go to the 
   expect(jev.calls.map((c) => Object.keys(c.questions))).toEqual([["workaround"]]);
 });
 
+test("bg_run's command gets the bash rules", async () => {
+  const { h, jev, ctx } = setup(safe);
+  await h.emit("before_agent_start", { prompt: "x" }, ctx);
+  expect(await h.emit("tool_call", call("bg_run", { command: "rg foo", kind: "job" }), ctx)).toBeUndefined();
+  expect(jev.calls).toHaveLength(0);
+  const forced: any = await h.emit("tool_call", call("bg_run", { command: "git push --force origin main", kind: "job" }, "t2"), ctx);
+  expect(forced?.block).toBe(true);
+  expect(forced.reason).toMatch(/force-pushes main\/master/u);
+  // Held by the fixed bash rule: Jev is only asked for a workaround.
+  expect(jev.calls.map((c) => Object.keys(c.questions))).toEqual([["workaround"]]);
+});
+
 test("without UI, a retried hold is blocked", async () => {
   const { h, ctx } = setup(risky, { hasUI: false });
   await h.emit("before_agent_start", { prompt: "x" }, ctx);

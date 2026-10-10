@@ -45,7 +45,7 @@ export const DEFAULT_CONFIG: GateConfig = {
   allowTools: [
     "codemode", "tool_search", "todo", "ask_user_question", "plan_mode_question", "plan_mode_complete",
     "web_search", "fetch_content", "get_search_content", "code_search", "radius_web_search", "web_enable",
-    "bg_status", "bg_logs", "bg_result", "bg_wait", "subagents_enable",
+    "bg_status", "bg_logs", "bg_result", "bg_wait", "bg_kill", "subagents_enable",
   ],
   readOnlyCommands: [],
   pushBack: true,
@@ -53,6 +53,8 @@ export const DEFAULT_CONFIG: GateConfig = {
 
 const STATUS_KEY = "tool-gate";
 const BUILTIN_READ = new Set(["read", "grep", "find", "ls"]);
+/** Tools whose `command` is a shell command, judged by the same rules: bash, and pi-bg's bg_run. */
+const SHELL_TOOLS = new Set(["bash", "bg_run"]);
 
 type Plan =
   | { kind: "allow"; why: string }
@@ -128,8 +130,10 @@ export default function toolGate(pi: ExtensionAPI) {
 
   const plan = async (tool: string, input: Record<string, unknown>, cwd: string): Promise<Plan> => {
     if (config.allowTools.includes(tool)) return { kind: "allow", why: "allow list" };
-    if (tool === "bash") {
+    if (SHELL_TOOLS.has(tool)) {
       const command = String(input.command ?? "");
+      // pi-bg's bg_run takes its own working directory.
+      if (tool !== "bash" && typeof input.cwd === "string" && input.cwd) cwd = path.resolve(cwd, expandHome(input.cwd));
       const reasons = alwaysAskBash(command, cwd, (await git(cwd))?.branch, await ignoredByGit(secretGitAdds(command, cwd)));
       if (reasons.length) return { kind: "ask", reasons, key: `fixed:${reasons.join("; ")}`, args: clip(command, 6_000) };
       if (isReadOnlyBash(command, config.readOnlyCommands)) return { kind: "allow", why: "read-only command" };
@@ -270,7 +274,7 @@ export default function toolGate(pi: ExtensionAPI) {
   };
 
   const describeCall = (tool: string, input: Record<string, unknown>) => {
-    if (tool === "bash") return `bash: ${clip(String(input.command ?? ""), 200)}`;
+    if (SHELL_TOOLS.has(tool)) return `${tool}: ${clip(String(input.command ?? ""), 200)}`;
     if (tool === "edit" || tool === "write") return `${tool}: ${String(input.path ?? "")}`;
     return `${tool}: ${clip(JSON.stringify(input), 200)}`;
   };

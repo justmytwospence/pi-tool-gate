@@ -25,7 +25,7 @@ const MAX_LINES = 2_000;
 const MAX_FILE_BYTES = 2_000_000;
 
 export async function callView(tool: string, input: Record<string, unknown>, cwd: string): Promise<CallView> {
-  if (tool === "bash") return { tool, subject: "", body: { kind: "code", lang: "bash", text: formatBash(String(input.command ?? "")) } };
+  if (tool === "bash" || tool === "bg_run") return { tool, subject: tool === "bash" ? "" : String(input.name ?? ""), body: { kind: "code", lang: "bash", text: formatBash(String(input.command ?? "")) } };
   if (tool === "edit" || tool === "write") {
     const file = String(input.path ?? "");
     const abs = path.resolve(cwd, expandHome(file));
